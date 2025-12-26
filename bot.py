@@ -118,30 +118,33 @@ async def run_bot(transport: DailyTransport):
     - RTVI event handling
     """
 
-    # Initialize the Gemini Multimodal Live model with service account credentials
+    # Initialize the Gemini Multimodal Live model with Vertex AI
     voice_name = os.getenv("GEMINI_VOICE_NAME", "Charon")
+    project_id = os.getenv("GOOGLE_CLOUD_PROJECT_ID")
+    location = os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1")
     
-    llm = GeminiLiveLLMService(
-        credentials=os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
-        project_id=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
-        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
-        model="gemini-2.5-flash-native-audio-preview-09-2025",
-        voice_id=voice_name,  # Aoede, Charon, Fenrir, Kore, Puck
+    if not project_id:
+        raise ValueError("GOOGLE_CLOUD_PROJECT_ID environment variable is required")
+    
+    model_id = "gemini-2.5-flash-native-audio-preview-09-2025"
+    model_path = f"projects/{project_id}/locations/{location}/publishers/google/models/{model_id}"
+    
+    logger.info(f"Using Vertex AI model: {model_path}")
+    logger.info(f"Using voice: {voice_name}")
+    
+    llm = GeminiLiveVertexLLMService(
+        credentials=fix_credentials(),
+        project_id=project_id,
+        location=location,
+        model=model_path,
+        voice_id=voice_name,
         system_instruction=SYSTEM_INSTRUCTION,
-        params=InputParams(thinking=ThinkingConfig(thinking_budget=0)),
+        temperature=0.8,
     )
 
-    messages = [
-        {
-            "role": "user",
-            "content": "Start by introducing yourself briefly and let everyone know you're ready to observe and describe what you see in the video stream.",
-        },
-    ]
-
-    # Set up conversation context and management
-    # The context aggregator will automatically collect conversation context
-    context = OpenAILLMContext(messages)
-    context_aggregator = llm.create_context_aggregator(context)
+    # Set up conversation context - use LLMContext instead of OpenAILLMContext
+    context = LLMContext()
+    context_aggregator = LLMContextAggregatorPair(context)
 
     # RTVI events for Pipecat client UI
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
