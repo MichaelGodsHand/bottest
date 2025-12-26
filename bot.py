@@ -36,7 +36,7 @@ from pipecat.transports.services.daily import DailyParams, DailyTransport
 load_dotenv(override=True)
 
 SYSTEM_INSTRUCTION = f"""
-You are Gemini, an AI assistant that can see and understand video streams in real-time.
+Your name is Sarah, an AI assistant that can see and understand video streams in real-time.
 
 Your task is to observe the video stream in the room and provide insightful, natural commentary about what you see. 
 
@@ -240,7 +240,7 @@ async def main():
             vad_analyzer=SileroVADAnalyzer(
                 params=VADParams(
                     stop_secs=0.3,
-                    min_volume=0.5,
+                    min_volume=0.3,
                 )
             ),
             turn_analyzer=LocalSmartTurnAnalyzerV3(),
