@@ -62,11 +62,15 @@ async def run_bot(transport: DailyTransport):
     - RTVI event handling
     """
 
-    # Initialize the Gemini Multimodal Live model
+    # Initialize the Gemini Multimodal Live model with service account credentials
+    voice_name = os.getenv("GEMINI_VOICE_NAME", "Charon")
+    
     llm = GeminiLiveLLMService(
-        api_key=os.getenv("GOOGLE_API_KEY"),
+        credentials=os.getenv("GOOGLE_APPLICATION_CREDENTIALS"),
+        project_id=os.getenv("GOOGLE_CLOUD_PROJECT_ID"),
+        location=os.getenv("GOOGLE_CLOUD_LOCATION", "us-central1"),
         model="gemini-2.5-flash-native-audio-preview-09-2025",
-        voice_id="Charon",  # Aoede, Charon, Fenrir, Kore, Puck
+        voice_id=voice_name,  # Aoede, Charon, Fenrir, Kore, Puck
         system_instruction=SYSTEM_INSTRUCTION,
         params=InputParams(thinking=ThinkingConfig(thinking_budget=0)),
     )
