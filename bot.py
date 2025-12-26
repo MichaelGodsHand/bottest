@@ -1,9 +1,3 @@
-#
-# Copyright (c) 2024–2025, Daily
-#
-# SPDX-License-Identifier: BSD 2-Clause License
-#
-
 """Gemini Bot Implementation.
 
 This module implements a chatbot using Google's Gemini Multimodal Live model.
@@ -19,6 +13,7 @@ the conversation flow using Gemini's streaming capabilities.
 
 import os
 import asyncio
+import sys
 
 from dotenv import load_dotenv
 from google.genai.types import ThinkingConfig
@@ -34,10 +29,7 @@ from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from pipecat.runner.types import RunnerArguments
-from pipecat.runner.utils import create_transport
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams
-from pipecat.transports.base_transport import BaseTransport
 from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 load_dotenv(override=True)
@@ -61,7 +53,7 @@ When the conversation starts, introduce yourself briefly and let the user know y
 """
 
 
-async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
+async def run_bot(transport: DailyTransport):
     """Main bot execution function.
 
     Sets up and runs the bot pipeline including:
@@ -120,56 +112,70 @@ async def run_bot(transport: BaseTransport, runner_args: RunnerArguments):
         # Start the conversation with initial message
         await task.queue_frames([LLMRunFrame()])
 
-    @transport.event_handler("on_client_connected")
-    async def on_client_connected(transport, participant):
-        """Handle when a client/participant connects to the room.
-        
-        This fires for both existing participants when the bot joins,
-        and for new participants who join after the bot.
-        """
+    @transport.event_handler("on_participant_joined")
+    async def on_participant_joined(transport, participant):
+        """Handle when a client/participant connects to the room."""
         participant_id = participant.get("id") if isinstance(participant, dict) else participant
-        logger.info(f"Client/Participant connected: {participant_id}")
+        logger.info(f"Participant joined: {participant_id}")
         # Capture both camera and screen video from the participant
         try:
-            await transport.capture_participant_video(participant_id, 1, "camera")
-            await transport.capture_participant_video(participant_id, 1, "screenVideo")
+            await transport.capture_participant_video(participant_id, framerate=1, video_source="camera")
+            await transport.capture_participant_video(participant_id, framerate=1, video_source="screenVideo")
             logger.info(f"Started capturing video from participant {participant_id}")
         except Exception as e:
             logger.warning(f"Could not capture video from participant {participant_id}: {e}")
 
-    @transport.event_handler("on_client_disconnected")
-    async def on_client_disconnected(transport, client):
-        logger.info(f"Client disconnected")
-        # Don't cancel the task when a client disconnects - keep running to observe other participants
+    @transport.event_handler("on_first_participant_joined")
+    async def on_first_participant_joined(transport, participant):
+        """Handle the first participant joining."""
+        await task.queue_frames([LLMRunFrame()])
 
-    runner = PipelineRunner(handle_sigint=runner_args.handle_sigint)
+    runner = PipelineRunner(handle_sigint=True)
 
     await runner.run(task)
 
 
-async def bot(runner_args: RunnerArguments):
-    """Main bot entry point for the bot starter."""
-
+async def main():
+    """Main entry point."""
+    
+    # Get room URL from command line argument or environment variable
+    room_url = None
+    
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        for i, arg in enumerate(sys.argv):
+            if arg == "--room-url" and i + 1 < len(sys.argv):
+                room_url = sys.argv[i + 1]
+                break
+    
+    # Fall back to environment variable
+    if not room_url:
+        room_url = os.getenv("DAILY_SAMPLE_ROOM_URL")
+    
+    if not room_url:
+        logger.error("No room URL provided. Use --room-url or set DAILY_SAMPLE_ROOM_URL environment variable")
+        sys.exit(1)
+    
+    room_token = os.getenv("DAILY_SAMPLE_ROOM_TOKEN")
+    
+    logger.info(f"Joining room: {room_url}")
+    
     # Krisp is available when deployed to Pipecat Cloud
     if os.environ.get("ENV") != "local":
-        from pipecat.audio.filters.krisp_filter import KrispFilter
-
-        krisp_filter = KrispFilter()
+        try:
+            from pipecat.audio.filters.krisp_filter import KrispFilter
+            krisp_filter = KrispFilter()
+        except ImportError:
+            krisp_filter = None
     else:
         krisp_filter = None
 
-    # Get room URL from environment or command line
-    room_url = os.getenv("DAILY_SAMPLE_ROOM_URL")
-    room_token = os.getenv("DAILY_SAMPLE_ROOM_TOKEN")
-    
-    # Check if room URL is provided via command line arguments
-    if hasattr(runner_args, 'room_url') and runner_args.room_url:
-        room_url = runner_args.room_url
-    elif hasattr(runner_args, 'args') and hasattr(runner_args.args, 'room_url'):
-        room_url = getattr(runner_args.args, 'room_url', None) or room_url
-
-    transport_params = {
-        "daily": lambda: DailyParams(
+    # Create Daily transport directly
+    transport = DailyTransport(
+        room_url,
+        room_token,
+        "Gemini Video Bot",
+        DailyParams(
             audio_in_enabled=True,
             audio_in_filter=krisp_filter,
             audio_out_enabled=True,
@@ -177,84 +183,10 @@ async def bot(runner_args: RunnerArguments):
             vad_analyzer=SileroVADAnalyzer(params=VADParams(stop_secs=0.2)),
             turn_analyzer=LocalSmartTurnAnalyzerV3(),
         )
-    }
+    )
 
-    transport = await create_transport(runner_args, transport_params)
-    
-    # If room URL is set, try to join the room directly
-    if room_url:
-        logger.info(f"Room URL found in environment: {room_url}")
-        logger.info("Attempting to join room directly...")
-        
-        # Log transport type and available methods for debugging
-        logger.debug(f"Transport type: {type(transport)}")
-        logger.debug(f"Transport attributes: {[attr for attr in dir(transport) if not attr.startswith('__')]}")
-        
-        try:
-            # Method 1: Try direct join method on transport
-            if hasattr(transport, 'join') and callable(getattr(transport, 'join')):
-                logger.info("Trying transport.join()...")
-                join_result = await transport.join(room_url, token=room_token) if room_token else await transport.join(room_url)
-                logger.info(f"Join result: {join_result}")
-            
-            # Method 2: Try join_room method
-            elif hasattr(transport, 'join_room') and callable(getattr(transport, 'join_room')):
-                logger.info("Trying transport.join_room()...")
-                join_result = await transport.join_room(room_url, token=room_token) if room_token else await transport.join_room(room_url)
-                logger.info(f"Join result: {join_result}")
-            
-            # Method 3: Access underlying Daily client (for DailyTransport)
-            elif isinstance(transport, DailyTransport):
-                logger.info("Transport is DailyTransport, accessing internal client...")
-                # Try various ways to access the Daily client
-                daily_client = None
-                for attr_name in ['_client', 'client', '_daily', '_call_client', 'call_client']:
-                    if hasattr(transport, attr_name):
-                        potential_client = getattr(transport, attr_name)
-                        if potential_client and hasattr(potential_client, 'join'):
-                            daily_client = potential_client
-                            logger.info(f"Found Daily client via {attr_name}")
-                            break
-                
-                if daily_client:
-                    # Use the Daily client's join method (synchronous, like in videotest.py)
-                    def on_joined(data, error):
-                        if error:
-                            logger.error(f"Failed to join room: {error}")
-                        else:
-                            logger.info(f"Successfully joined room: {room_url}")
-                    
-                    join_kwargs = {"url": room_url, "completion": on_joined}
-                    if room_token:
-                        join_kwargs["token"] = room_token
-                    
-                    daily_client.join(**join_kwargs)
-                    logger.info("Called join on Daily client")
-                    await asyncio.sleep(2)  # Give it time to join
-                else:
-                    logger.warning("Could not find Daily client in transport")
-            
-            # Method 4: Set room URL attribute that transport might check
-            else:
-                logger.info("Trying to set room URL as transport attribute...")
-                for attr_name in ['_room_url', 'room_url', '_daily_room_url']:
-                    if hasattr(transport, attr_name):
-                        setattr(transport, attr_name, room_url)
-                        logger.info(f"Set {attr_name} = {room_url}")
-                        if room_token and hasattr(transport, '_room_token'):
-                            setattr(transport, '_room_token', room_token)
-                        break
-                
-        except Exception as e:
-            logger.error(f"Error attempting to join room: {e}")
-            import traceback
-            logger.debug(traceback.format_exc())
-            logger.info("Bot will continue - transport may join room automatically or via web interface")
-
-    await run_bot(transport, runner_args)
+    await run_bot(transport)
 
 
 if __name__ == "__main__":
-    from pipecat.runner.run import main
-
-    main()
+    asyncio.run(main())
