@@ -18,6 +18,7 @@ the conversation flow using Gemini's streaming capabilities.
 """
 
 import os
+import asyncio
 
 from dotenv import load_dotenv
 from google.genai.types import ThinkingConfig
@@ -37,7 +38,7 @@ from pipecat.runner.types import RunnerArguments
 from pipecat.runner.utils import create_transport
 from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams
 from pipecat.transports.base_transport import BaseTransport
-from pipecat.transports.daily.transport import DailyParams
+from pipecat.transports.daily.transport import DailyParams, DailyTransport
 
 load_dotenv(override=True)
 
@@ -180,32 +181,75 @@ async def bot(runner_args: RunnerArguments):
 
     transport = await create_transport(runner_args, transport_params)
     
-    # If room URL is set, join the room directly
+    # If room URL is set, try to join the room directly
     if room_url:
-        logger.info(f"Joining room directly: {room_url}")
+        logger.info(f"Room URL found in environment: {room_url}")
+        logger.info("Attempting to join room directly...")
+        
+        # Log transport type and available methods for debugging
+        logger.debug(f"Transport type: {type(transport)}")
+        logger.debug(f"Transport attributes: {[attr for attr in dir(transport) if not attr.startswith('__')]}")
+        
         try:
-            # Try to join the room using the transport's join method
-            if hasattr(transport, 'join_room'):
-                await transport.join_room(room_url, token=room_token)
-                logger.info("Successfully joined room via join_room()")
-            elif hasattr(transport, 'join'):
-                join_kwargs = {"url": room_url}
-                if room_token:
-                    join_kwargs["token"] = room_token
-                await transport.join(**join_kwargs)
-                logger.info("Successfully joined room via join()")
-            elif hasattr(transport, '_daily') and hasattr(transport._daily, 'join'):
-                # Access the underlying Daily client
-                join_kwargs = {"url": room_url}
-                if room_token:
-                    join_kwargs["token"] = room_token
-                await transport._daily.join(**join_kwargs)
-                logger.info("Successfully joined room via _daily.join()")
+            # Method 1: Try direct join method on transport
+            if hasattr(transport, 'join') and callable(getattr(transport, 'join')):
+                logger.info("Trying transport.join()...")
+                join_result = await transport.join(room_url, token=room_token) if room_token else await transport.join(room_url)
+                logger.info(f"Join result: {join_result}")
+            
+            # Method 2: Try join_room method
+            elif hasattr(transport, 'join_room') and callable(getattr(transport, 'join_room')):
+                logger.info("Trying transport.join_room()...")
+                join_result = await transport.join_room(room_url, token=room_token) if room_token else await transport.join_room(room_url)
+                logger.info(f"Join result: {join_result}")
+            
+            # Method 3: Access underlying Daily client (for DailyTransport)
+            elif isinstance(transport, DailyTransport):
+                logger.info("Transport is DailyTransport, accessing internal client...")
+                # Try various ways to access the Daily client
+                daily_client = None
+                for attr_name in ['_client', 'client', '_daily', '_call_client', 'call_client']:
+                    if hasattr(transport, attr_name):
+                        potential_client = getattr(transport, attr_name)
+                        if potential_client and hasattr(potential_client, 'join'):
+                            daily_client = potential_client
+                            logger.info(f"Found Daily client via {attr_name}")
+                            break
+                
+                if daily_client:
+                    # Use the Daily client's join method (synchronous, like in videotest.py)
+                    def on_joined(data, error):
+                        if error:
+                            logger.error(f"Failed to join room: {error}")
+                        else:
+                            logger.info(f"Successfully joined room: {room_url}")
+                    
+                    join_kwargs = {"url": room_url, "completion": on_joined}
+                    if room_token:
+                        join_kwargs["token"] = room_token
+                    
+                    daily_client.join(**join_kwargs)
+                    logger.info("Called join on Daily client")
+                    await asyncio.sleep(2)  # Give it time to join
+                else:
+                    logger.warning("Could not find Daily client in transport")
+            
+            # Method 4: Set room URL attribute that transport might check
             else:
-                logger.warning("Could not find join method on transport. Room URL will be used when transport starts.")
+                logger.info("Trying to set room URL as transport attribute...")
+                for attr_name in ['_room_url', 'room_url', '_daily_room_url']:
+                    if hasattr(transport, attr_name):
+                        setattr(transport, attr_name, room_url)
+                        logger.info(f"Set {attr_name} = {room_url}")
+                        if room_token and hasattr(transport, '_room_token'):
+                            setattr(transport, '_room_token', room_token)
+                        break
+                
         except Exception as e:
-            logger.error(f"Failed to join room directly: {e}")
-            logger.info("Transport will use room URL from environment when it starts")
+            logger.error(f"Error attempting to join room: {e}")
+            import traceback
+            logger.debug(traceback.format_exc())
+            logger.info("Bot will continue - transport may join room automatically or via web interface")
 
     await run_bot(transport, runner_args)
 
