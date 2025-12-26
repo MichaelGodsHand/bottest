@@ -157,6 +157,16 @@ async def bot(runner_args: RunnerArguments):
     else:
         krisp_filter = None
 
+    # Get room URL from environment or command line
+    room_url = os.getenv("DAILY_SAMPLE_ROOM_URL")
+    room_token = os.getenv("DAILY_SAMPLE_ROOM_TOKEN")
+    
+    # Check if room URL is provided via command line arguments
+    if hasattr(runner_args, 'room_url') and runner_args.room_url:
+        room_url = runner_args.room_url
+    elif hasattr(runner_args, 'args') and hasattr(runner_args.args, 'room_url'):
+        room_url = getattr(runner_args.args, 'room_url', None) or room_url
+
     transport_params = {
         "daily": lambda: DailyParams(
             audio_in_enabled=True,
@@ -169,6 +179,33 @@ async def bot(runner_args: RunnerArguments):
     }
 
     transport = await create_transport(runner_args, transport_params)
+    
+    # If room URL is set, join the room directly
+    if room_url:
+        logger.info(f"Joining room directly: {room_url}")
+        try:
+            # Try to join the room using the transport's join method
+            if hasattr(transport, 'join_room'):
+                await transport.join_room(room_url, token=room_token)
+                logger.info("Successfully joined room via join_room()")
+            elif hasattr(transport, 'join'):
+                join_kwargs = {"url": room_url}
+                if room_token:
+                    join_kwargs["token"] = room_token
+                await transport.join(**join_kwargs)
+                logger.info("Successfully joined room via join()")
+            elif hasattr(transport, '_daily') and hasattr(transport._daily, 'join'):
+                # Access the underlying Daily client
+                join_kwargs = {"url": room_url}
+                if room_token:
+                    join_kwargs["token"] = room_token
+                await transport._daily.join(**join_kwargs)
+                logger.info("Successfully joined room via _daily.join()")
+            else:
+                logger.warning("Could not find join method on transport. Room URL will be used when transport starts.")
+        except Exception as e:
+            logger.error(f"Failed to join room directly: {e}")
+            logger.info("Transport will use room URL from environment when it starts")
 
     await run_bot(transport, runner_args)
 
