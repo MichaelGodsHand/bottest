@@ -36,7 +36,7 @@ from pipecat.transports.services.daily import DailyParams, DailyTransport
 load_dotenv(override=True)
 
 SYSTEM_INSTRUCTION = f"""
-You are Gemini, an AI assistant that can see and understand video streams in real-time.
+You are Sarah, an AI assistant that can see and understand video streams in real-time.
 
 Your task is to observe the video stream in the room and provide insightful, natural commentary about what you see. 
 
