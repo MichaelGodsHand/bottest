@@ -126,7 +126,7 @@ async def run_bot(transport: DailyTransport):
     if not project_id:
         raise ValueError("GOOGLE_CLOUD_PROJECT_ID environment variable is required")
     
-    model_id = "gemini-2.5-flash-native-audio-preview-09-2025"
+    model_id = "gemini-live-2.5-flash-preview-native-audio-09-2025"
     model_path = f"projects/{project_id}/locations/{location}/publishers/google/models/{model_id}"
     
     logger.info(f"Using Vertex AI model: {model_path}")
