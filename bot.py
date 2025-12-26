@@ -160,15 +160,9 @@ async def main():
     
     logger.info(f"Joining room: {room_url}")
     
-    # Krisp is available when deployed to Pipecat Cloud
-    if os.environ.get("ENV") != "local":
-        try:
-            from pipecat.audio.filters.krisp_filter import KrispFilter
-            krisp_filter = KrispFilter()
-        except ImportError:
-            krisp_filter = None
-    else:
-        krisp_filter = None
+    # Krisp filter is optional - disable for local development
+    krisp_filter = None
+    logger.info("Running without Krisp filter (local mode)")
 
     # Create Daily transport directly
     transport = DailyTransport(
