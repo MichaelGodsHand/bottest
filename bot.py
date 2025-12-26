@@ -14,9 +14,9 @@ the conversation flow using Gemini's streaming capabilities.
 import os
 import asyncio
 import sys
+import json
 
 from dotenv import load_dotenv
-from google.genai.types import ThinkingConfig
 from loguru import logger
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -27,10 +27,11 @@ from pipecat.frames.frames import (
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
 from pipecat.pipeline.task import PipelineParams, PipelineTask
-from pipecat.processors.aggregators.openai_llm_context import OpenAILLMContext
+from pipecat.processors.aggregators.llm_context import LLMContext
+from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from pipecat.services.google.gemini_live.llm import GeminiLiveLLMService, InputParams
-from pipecat.transports.daily.transport import DailyParams, DailyTransport
+from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
+from pipecat.transports.services.daily import DailyParams, DailyTransport
 
 load_dotenv(override=True)
 
@@ -51,6 +52,61 @@ Guidelines:
 Keep your responses natural and conversational. Don't over-explain - be concise but informative.
 When the conversation starts, introduce yourself briefly and let the user know you're ready to observe the video stream.
 """
+
+
+def fix_credentials():
+    """Fix and validate Google Cloud credentials."""
+    creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    
+    if not creds:
+        raise ValueError("GOOGLE_APPLICATION_CREDENTIALS environment variable is not set")
+    
+    creds = creds.strip()
+    
+    # Remove surrounding quotes if present
+    if (creds.startswith('"') and creds.endswith('"')) or (creds.startswith("'") and creds.endswith("'")):
+        creds = creds[1:-1]
+    
+    # Check if it's already JSON
+    if creds.startswith('{') or creds.startswith('['):
+        try:
+            creds_dict = json.loads(creds)
+            if "private_key" in creds_dict:
+                creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+            return json.dumps(creds_dict)
+        except json.JSONDecodeError:
+            pass
+    
+    # Try to find the file
+    file_path = None
+    script_dir = os.path.dirname(os.path.abspath(__file__))
+    
+    if os.path.isabs(creds):
+        if os.path.isfile(creds):
+            file_path = creds
+    elif os.path.isfile(creds):
+        file_path = os.path.abspath(creds)
+    else:
+        potential_path = os.path.join(script_dir, creds)
+        if os.path.isfile(potential_path):
+            file_path = potential_path
+    
+    if file_path and os.path.isfile(file_path):
+        try:
+            with open(file_path, 'r') as f:
+                creds_dict = json.load(f)
+        except (FileNotFoundError, json.JSONDecodeError) as e:
+            raise ValueError(f"Failed to read credentials from file '{file_path}': {e}") from e
+    else:
+        try:
+            creds_dict = json.loads(creds)
+        except json.JSONDecodeError as e:
+            raise ValueError(f"GOOGLE_APPLICATION_CREDENTIALS is not valid JSON and not a valid file path. Error: {e}") from e
+    
+    if "private_key" in creds_dict:
+        creds_dict["private_key"] = creds_dict["private_key"].replace("\\n", "\n")
+
+    return json.dumps(creds_dict)
 
 
 async def run_bot(transport: DailyTransport):
