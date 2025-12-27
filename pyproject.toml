@@ -7,7 +7,10 @@ dependencies = [
     "pipecat-ai[webrtc,daily,silero,google,local-smart-turn-v3,runner]>=0.0.90",
     "pipecatcloud>=0.2.6",
     "google-genai",
-    "loguru"
+    "loguru",
+    "fastapi>=0.104.0",
+    "uvicorn[standard]>=0.24.0",
+    "pydantic>=2.0.0"
 ]
 
 [dependency-groups]
