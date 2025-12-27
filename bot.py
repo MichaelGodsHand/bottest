@@ -18,7 +18,7 @@ import asyncio
 import sys
 import json
 import threading
-from typing import Optional
+from typing import Optional, Dict
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -26,6 +26,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 import uvicorn
+import aiohttp
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -40,13 +41,24 @@ from pipecat.processors.aggregators.llm_response_universal import LLMContextAggr
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
 from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
+from pipecat.adapters.schemas.function_schema import FunctionSchema
+from pipecat.adapters.schemas.tools_schema import ToolsSchema
+from pipecat.services.llm_service import FunctionCallParams
 
 load_dotenv(override=True)
+
+# Browser control endpoint URL from environment
+BROWSER_CONTROL_URL = os.getenv("BROWSER_CONTROL_URL", "")
+
+# Store session_id per room: {room_url: session_id}
+_room_sessions: Dict[str, str] = {}
 
 SYSTEM_INSTRUCTION = f"""
 Your name is Sarah, an AI assistant that can see and understand video streams in real-time.
 
 Your task is to observe the video stream in the room and provide insightful, natural commentary about what you see. 
+
+You also have the ability to control a browser that is sharing its screen in this room. When the user asks you to navigate to a website, click something, fill out a form, or perform any browser action, use the control_browser function.
 
 Guidelines:
 - Describe what you see in the video stream clearly and concisely
@@ -56,6 +68,8 @@ Guidelines:
 - Be conversational and engaging - like you're watching along with someone
 - Ask questions if something is unclear or interesting
 - React naturally to changes in the video
+- When the user asks you to control the browser, use the control_browser function
+- IMPORTANT: When using control_browser, ALWAYS end the action description with "and NOTHING else" to ensure the browser only performs the requested action
 
 Keep your responses natural and conversational. Don't over-explain - be concise but informative.
 When the conversation starts, introduce yourself briefly and let the user know you're ready to observe the video stream.
@@ -117,13 +131,97 @@ def fix_credentials():
     return json.dumps(creds_dict)
 
 
-async def run_bot(transport: DailyTransport):
+async def control_browser(params: FunctionCallParams):
+    """
+    Control the browser by making a request to the browseruseop endpoint.
+    This function is called by Gemini when the user requests browser actions.
+    """
+    try:
+        url = params.arguments["url"]
+        action = params.arguments["action"]
+        max_steps = params.arguments.get("max_steps", 20)
+        
+        # Get session_id from the current bot instance
+        # We'll need to pass this through the closure or store it
+        session_id = params.arguments.get("session_id")
+        
+        if not session_id:
+            # Try to get from the current bot instance context
+            # This will be set when the bot is initialized
+            await params.result_callback({
+                "error": "Session ID not available. Browser control requires an active session.",
+                "success": False
+            })
+            return
+        
+        if not BROWSER_CONTROL_URL:
+            await params.result_callback({
+                "error": "Browser control URL not configured",
+                "success": False
+            })
+            return
+        
+        # Ensure action ends with "and NOTHING else"
+        action = action.strip()
+        if not action.lower().endswith("and nothing else"):
+            action = f"{action} and NOTHING else"
+        
+        endpoint_url = f"{BROWSER_CONTROL_URL.rstrip('/')}/action"
+        
+        payload = {
+            "url": url,
+            "action": action,
+            "session_id": session_id,
+            "max_steps": max_steps
+        }
+        
+        logger.info(f"🌐 Calling browser control: {endpoint_url}")
+        logger.info(f"📤 Payload: url={url}, action={action[:50]}..., session_id={session_id[:8]}")
+        
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                endpoint_url,
+                json=payload,
+                timeout=aiohttp.ClientTimeout(total=60),
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"✅ Browser action completed: {result.get('session_id', 'unknown')}")
+                    await params.result_callback({
+                        "success": True,
+                        "session_id": result.get("session_id", session_id),
+                        "urls_visited": result.get("urls_visited", []),
+                        "message": "Browser action completed successfully"
+                    })
+                else:
+                    error_text = await response.text()
+                    logger.error(f"❌ Browser control failed: {response.status} - {error_text}")
+                    await params.result_callback({
+                        "success": False,
+                        "error": f"HTTP {response.status}: {error_text}"
+                    })
+    except asyncio.TimeoutError:
+        logger.error("❌ Browser control request timed out")
+        await params.result_callback({
+            "success": False,
+            "error": "Request timed out"
+        })
+    except Exception as e:
+        logger.error(f"❌ Browser control error: {e}", exc_info=True)
+        await params.result_callback({
+            "success": False,
+            "error": str(e)
+        })
+
+
+async def run_bot(transport: DailyTransport, session_id: Optional[str] = None):
     """Main bot execution function.
 
     Sets up and runs the bot pipeline including:
     - Gemini Live multimodal model integration
     - Voice activity detection
     - RTVI event handling
+    - Browser control function calling
     """
 
     # Initialize the Gemini Multimodal Live model with Vertex AI
@@ -139,6 +237,42 @@ async def run_bot(transport: DailyTransport):
     
     logger.info(f"Using Vertex AI model: {model_path}")
     logger.info(f"Using voice: {voice_name}")
+    if session_id:
+        logger.info(f"Browser session ID: {session_id[:8]}...")
+    
+    # Store session_id for this bot instance
+    current_session_id = session_id
+    
+    # Define browser control function if session_id and URL are available
+    tools = None
+    if current_session_id and BROWSER_CONTROL_URL:
+        browser_control_function = FunctionSchema(
+            name="control_browser",
+            description="Control the browser that is sharing its screen. Use this when the user asks you to navigate to a website, click buttons, fill forms, or perform any browser action. The action MUST end with 'and NOTHING else'. IMPORTANT: Always include the session_id in your function call.",
+            properties={
+                "url": {
+                    "type": "string",
+                    "description": "The URL to navigate to or perform action on (e.g., 'https://www.example.com')"
+                },
+                "action": {
+                    "type": "string",
+                    "description": "The action to perform in the browser. MUST end with 'and NOTHING else'. Examples: 'Navigate to the homepage and NOTHING else', 'Click the login button and NOTHING else', 'Fill the form with name John and email john@example.com and NOTHING else'"
+                },
+                "session_id": {
+                    "type": "string",
+                    "description": f"The browser session ID. Always use this value: {current_session_id}"
+                },
+                "max_steps": {
+                    "type": "integer",
+                    "description": "Maximum number of steps to perform (default: 20)",
+                    "default": 20
+                }
+            },
+            required=["url", "action", "session_id"],
+        )
+        
+        tools = ToolsSchema(standard_tools=[browser_control_function])
+        logger.info("✅ Browser control function defined")
     
     llm = GeminiLiveVertexLLMService(
         credentials=fix_credentials(),
@@ -148,7 +282,20 @@ async def run_bot(transport: DailyTransport):
         voice_id=voice_name,
         system_instruction=SYSTEM_INSTRUCTION,
         temperature=0.8,
+        tools=tools,
     )
+    
+    # Register the function handler if tools are available
+    if tools and current_session_id and BROWSER_CONTROL_URL:
+        # Create a closure that captures the session_id
+        async def control_browser_with_session(params: FunctionCallParams):
+            # Inject session_id if not provided
+            if "session_id" not in params.arguments:
+                params.arguments["session_id"] = current_session_id
+            await control_browser(params)
+        
+        llm.register_function("control_browser", control_browser_with_session)
+        logger.info("✅ Browser control function registered")
 
     # Set up conversation context - use LLMContext instead of OpenAILLMContext
     context = LLMContext()
@@ -206,9 +353,14 @@ async def run_bot(transport: DailyTransport):
     await runner.run(task)
 
 
-async def join_room_task(room_url: str, room_token: str = None):
+async def join_room_task(room_url: str, room_token: str = None, session_id: Optional[str] = None):
     """Join a Daily room and run the bot."""
     logger.info(f"🤖 Joining room: {room_url}")
+    
+    # Store session_id for this room
+    if session_id:
+        _room_sessions[room_url] = session_id
+        logger.info(f"📝 Stored session_id {session_id[:8]}... for room {room_url[:50]}...")
     
     # Krisp filter is optional - disable for local development
     krisp_filter = None
@@ -234,7 +386,7 @@ async def join_room_task(room_url: str, room_token: str = None):
         )
     )
 
-    await run_bot(transport)
+    await run_bot(transport, session_id=session_id)
 
 
 async def main():
@@ -336,7 +488,7 @@ async def join_room(request: JoinRoomRequest):
     # Start bot in background task
     try:
         logger.info(f"🚀 Creating bot task to join room...")
-        bot_task = asyncio.create_task(join_room_task(room_url, room_token))
+        bot_task = asyncio.create_task(join_room_task(room_url, room_token, session_id))
         _active_bot_tasks[room_url] = bot_task
         
         logger.info(f"✅ Bot task created and started for room: {room_url[:50]}...")
