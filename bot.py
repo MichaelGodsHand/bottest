@@ -9,15 +9,23 @@ It includes:
 
 The bot runs as part of a pipeline that processes audio/video frames and manages
 the conversation flow using Gemini's streaming capabilities.
+
+It also includes a FastAPI server to receive room join requests from browseruseop.
 """
 
 import os
 import asyncio
 import sys
 import json
+import threading
+from typing import Optional
 
 from dotenv import load_dotenv
 from loguru import logger
+from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
+import uvicorn
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
@@ -198,30 +206,9 @@ async def run_bot(transport: DailyTransport):
     await runner.run(task)
 
 
-async def main():
-    """Main entry point."""
-    
-    # Get room URL from command line argument or environment variable
-    room_url = None
-    
-    # Check command line arguments
-    if len(sys.argv) > 1:
-        for i, arg in enumerate(sys.argv):
-            if arg == "--room-url" and i + 1 < len(sys.argv):
-                room_url = sys.argv[i + 1]
-                break
-    
-    # Fall back to environment variable
-    if not room_url:
-        room_url = os.getenv("DAILY_SAMPLE_ROOM_URL")
-    
-    if not room_url:
-        logger.error("No room URL provided. Use --room-url or set DAILY_SAMPLE_ROOM_URL environment variable")
-        sys.exit(1)
-    
-    room_token = os.getenv("DAILY_SAMPLE_ROOM_TOKEN")
-    
-    logger.info(f"Joining room: {room_url}")
+async def join_room_task(room_url: str, room_token: str = None):
+    """Join a Daily room and run the bot."""
+    logger.info(f"🤖 Joining room: {room_url}")
     
     # Krisp filter is optional - disable for local development
     krisp_filter = None
@@ -250,5 +237,148 @@ async def main():
     await run_bot(transport)
 
 
+async def main():
+    """Main entry point."""
+    
+    # Get room URL from command line argument or environment variable
+    room_url = None
+    
+    # Check command line arguments
+    if len(sys.argv) > 1:
+        for i, arg in enumerate(sys.argv):
+            if arg == "--room-url" and i + 1 < len(sys.argv):
+                room_url = sys.argv[i + 1]
+                break
+    
+    # Fall back to environment variable
+    if not room_url:
+        room_url = os.getenv("DAILY_SAMPLE_ROOM_URL")
+    
+    if not room_url:
+        logger.error("No room URL provided. Use --room-url or set DAILY_SAMPLE_ROOM_URL environment variable")
+        sys.exit(1)
+    
+    room_token = os.getenv("DAILY_SAMPLE_ROOM_TOKEN")
+    
+    await join_room_task(room_url, room_token)
+
+
+# ============================================================================
+# FastAPI Server for receiving room join requests
+# ============================================================================
+
+app = FastAPI(title="Gemini Bot Server", version="1.0.0")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Track active bot tasks
+_active_bot_tasks: dict[str, asyncio.Task] = {}
+
+
+class JoinRoomRequest(BaseModel):
+    """Request model for joining a Daily room."""
+    room_url: str
+    room_token: Optional[str] = None
+    session_id: Optional[str] = None  # Optional session ID for tracking
+
+
+class JoinRoomResponse(BaseModel):
+    """Response model for room join request."""
+    success: bool
+    message: str
+    room_url: str
+    session_id: Optional[str] = None
+
+
+@app.post("/join-room", response_model=JoinRoomResponse)
+async def join_room(request: JoinRoomRequest):
+    """
+    Join a Daily.co room and start the Gemini bot.
+    
+    This endpoint is called by browseruseop after it creates a room.
+    """
+    room_url = request.room_url
+    room_token = request.room_token
+    session_id = request.session_id or "unknown"
+    
+    if not room_url:
+        raise HTTPException(status_code=400, detail="room_url is required")
+    
+    # Check if bot is already running for this room
+    if room_url in _active_bot_tasks:
+        task = _active_bot_tasks[room_url]
+        if not task.done():
+            logger.info(f"Bot already running for room: {room_url}")
+            return JoinRoomResponse(
+                success=True,
+                message="Bot already running for this room",
+                room_url=room_url,
+                session_id=session_id
+            )
+        else:
+            # Task is done, remove it
+            del _active_bot_tasks[room_url]
+    
+    logger.info(f"📥 Received join request for room: {room_url} (session: {session_id})")
+    
+    # Start bot in background task
+    try:
+        bot_task = asyncio.create_task(join_room_task(room_url, room_token))
+        _active_bot_tasks[room_url] = bot_task
+        
+        logger.info(f"✅ Started bot task for room: {room_url}")
+        
+        return JoinRoomResponse(
+            success=True,
+            message=f"Bot started joining room: {room_url}",
+            room_url=room_url,
+            session_id=session_id
+        )
+    except Exception as e:
+        logger.error(f"❌ Failed to start bot: {e}", exc_info=True)
+        raise HTTPException(status_code=500, detail=f"Failed to start bot: {str(e)}")
+
+
+@app.get("/health")
+async def health():
+    """Health check endpoint."""
+    return {
+        "status": "healthy",
+        "active_rooms": len([t for t in _active_bot_tasks.values() if not t.done()])
+    }
+
+
+@app.get("/")
+async def root():
+    """Root endpoint."""
+    return {
+        "message": "Gemini Bot Server",
+        "endpoints": {
+            "POST /join-room": "Join a Daily.co room and start the bot",
+            "GET /health": "Health check",
+        }
+    }
+
+
+def run_server(port: int = 8000):
+    """Run the FastAPI server."""
+    logger.info(f"🚀 Starting Gemini Bot Server on port {port}")
+    uvicorn.run(app, host="0.0.0.0", port=port)
+
+
 if __name__ == "__main__":
-    asyncio.run(main())
+    # Check if we should run as server or join a room directly
+    if len(sys.argv) > 1 and sys.argv[1] == "--server":
+        # Run as HTTP server
+        port = int(os.getenv("PORT", "8000"))
+        run_server(port)
+    else:
+        # Run as CLI (original behavior)
+        asyncio.run(main())
