@@ -69,7 +69,7 @@ Guidelines:
 - Ask questions if something is unclear or interesting
 - React naturally to changes in the video
 - When the user asks you to control the browser, use the control_browser function
-- IMPORTANT: When using control_browser, ALWAYS end the action description with "and NOTHING else" to ensure the browser only performs the requested action
+- IMPORTANT: When using control_browser, ALWAYS end the action description with "and do NOTHING else" to ensure the browser only performs the requested action
 
 Keep your responses natural and conversational. Don't over-explain - be concise but informative.
 When the conversation starts, introduce yourself briefly and let the user know you're ready to observe the video stream.
@@ -161,10 +161,10 @@ async def control_browser(params: FunctionCallParams):
             })
             return
         
-        # Ensure action ends with "and NOTHING else"
+        # Ensure action ends with "and do NOTHING else"
         action = action.strip()
-        if not action.lower().endswith("and nothing else"):
-            action = f"{action} and NOTHING else"
+        if not action.lower().endswith("and do nothing else"):
+            action = f"{action} and do NOTHING else"
         
         endpoint_url = f"{BROWSER_CONTROL_URL.rstrip('/')}/action"
         
@@ -248,7 +248,7 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None):
     if current_session_id and BROWSER_CONTROL_URL:
         browser_control_function = FunctionSchema(
             name="control_browser",
-            description="Control the browser that is sharing its screen. Use this when the user asks you to navigate to a website, click buttons, fill forms, or perform any browser action. The action MUST end with 'and NOTHING else'. IMPORTANT: Always include the session_id in your function call.",
+            description="Control the browser that is sharing its screen. Use this when the user asks you to navigate to a website, click buttons, fill forms, or perform any browser action. The action MUST end with 'and do NOTHING else'. IMPORTANT: Always include the session_id in your function call.",
             properties={
                 "url": {
                     "type": "string",
@@ -256,7 +256,7 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None):
                 },
                 "action": {
                     "type": "string",
-                    "description": "The action to perform in the browser. MUST end with 'and NOTHING else'. Examples: 'Navigate to the homepage and NOTHING else', 'Click the login button and NOTHING else', 'Fill the form with name John and email john@example.com and NOTHING else'"
+                    "description": "The action to perform in the browser. MUST end with 'and do NOTHING else'. Examples: 'Navigate to the homepage and do NOTHING else', 'Click the login button and do NOTHING else', 'Fill the form with name John and email john@example.com and do NOTHING else'"
                 },
                 "session_id": {
                     "type": "string",
