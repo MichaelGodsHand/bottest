@@ -304,18 +304,22 @@ async def join_room(request: JoinRoomRequest):
     
     This endpoint is called by browseruseop after it creates a room.
     """
+    logger.info(f"📥 Received /join-room request")
+    logger.info(f"📥 Request body: room_url={request.room_url[:50] if request.room_url else None}..., session_id={request.session_id}")
+    
     room_url = request.room_url
     room_token = request.room_token
     session_id = request.session_id or "unknown"
     
     if not room_url:
+        logger.error("❌ room_url is required but not provided")
         raise HTTPException(status_code=400, detail="room_url is required")
     
     # Check if bot is already running for this room
     if room_url in _active_bot_tasks:
         task = _active_bot_tasks[room_url]
         if not task.done():
-            logger.info(f"Bot already running for room: {room_url}")
+            logger.info(f"ℹ️ Bot already running for room: {room_url[:50]}...")
             return JoinRoomResponse(
                 success=True,
                 message="Bot already running for this room",
@@ -324,16 +328,18 @@ async def join_room(request: JoinRoomRequest):
             )
         else:
             # Task is done, remove it
+            logger.info(f"🧹 Removing completed task for room: {room_url[:50]}...")
             del _active_bot_tasks[room_url]
     
-    logger.info(f"📥 Received join request for room: {room_url} (session: {session_id})")
+    logger.info(f"📥 Processing join request for room: {room_url[:50]}... (session: {session_id[:8]})")
     
     # Start bot in background task
     try:
+        logger.info(f"🚀 Creating bot task to join room...")
         bot_task = asyncio.create_task(join_room_task(room_url, room_token))
         _active_bot_tasks[room_url] = bot_task
         
-        logger.info(f"✅ Started bot task for room: {room_url}")
+        logger.info(f"✅ Bot task created and started for room: {room_url[:50]}...")
         
         return JoinRoomResponse(
             success=True,
