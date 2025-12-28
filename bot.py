@@ -32,7 +32,6 @@ from pipecat.audio.vad.silero import SileroVADAnalyzer
 from pipecat.audio.vad.vad_analyzer import VADParams
 from pipecat.frames.frames import (
     LLMRunFrame,
-    TextFrame,
 )
 from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.runner import PipelineRunner
@@ -40,7 +39,6 @@ from pipecat.pipeline.task import PipelineParams, PipelineTask
 from pipecat.processors.aggregators.llm_context import LLMContext
 from pipecat.processors.aggregators.llm_response_universal import LLMContextAggregatorPair
 from pipecat.processors.frameworks.rtvi import RTVIConfig, RTVIObserver, RTVIProcessor
-from pipecat.processors.frame_processor import FrameProcessor, FrameDirection
 from pipecat.services.google.gemini_live.llm_vertex import GeminiLiveVertexLLMService
 from pipecat.transports.services.daily import DailyParams, DailyTransport
 from pipecat.adapters.schemas.function_schema import FunctionSchema
@@ -442,12 +440,6 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
     else:
         logger.info(f"📝 Using default system instruction (no agent_data)")
     
-    # Verify system instruction mentions function calling
-    if "control_browser" in system_instruction.lower() or "function" in system_instruction.lower():
-        logger.info("✅ System instruction mentions function/control_browser")
-    else:
-        logger.warning("⚠️ System instruction does NOT mention function/control_browser - this might be why functions aren't called")
-    
     # Get site URL from agent data if available
     site_url = None
     if agent_data:
@@ -498,7 +490,6 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         tools = ToolsSchema(standard_tools=[browser_control_function])
         logger.info("✅ Browser control function defined")
     
-    # Create LLM service with tools (tools must be passed here for Gemini to know about them)
     llm = GeminiLiveVertexLLMService(
         credentials=fix_credentials(),
         project_id=project_id,
@@ -506,69 +497,23 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         model=model_path,
         voice_id=voice_name,
         system_instruction=system_instruction,
-        temperature=0.5,  # Lower temperature may reduce function calling - consider 0.8 like backup.py if functions aren't called
-        tools=tools,  # CRITICAL: Tools must be passed here
+        temperature=0.3,
+        tools=tools,
     )
-    
-    # Log tool configuration
-    logger.info(f"🔧 Tools configured: {tools is not None}")
-    if tools:
-        logger.info(f"🔧 Tools type: {type(tools)}")
-        if hasattr(tools, 'standard_tools'):
-            logger.info(f"🔧 Standard tools count: {len(tools.standard_tools) if tools.standard_tools else 0}")
-            for tool in (tools.standard_tools or []):
-                logger.info(f"🔧 Tool name: {getattr(tool, 'name', 'unknown')}")
     
     # Register the function handler if tools are available
     if tools and current_session_id and BROWSER_CONTROL_URL:
         # Create a closure that captures the session_id
         async def control_browser_with_session(params: FunctionCallParams):
-            # Inject session_id if not provided (matching backup.py pattern)
-            if "session_id" not in params.arguments:
+            # Inject session_id if not provided
+            if "session_id" not in params.arguments or not params.arguments.get("session_id"):
                 params.arguments["session_id"] = current_session_id
             logger.info(f"🔧 Function called: control_browser with url={params.arguments.get('url')}, action={params.arguments.get('action', '')[:60]}..., session_id={params.arguments.get('session_id', '')[:8]}")
             await control_browser(params)
         
-        # CRITICAL: Register the function handler AFTER LLM creation
-        # This connects the function name to the actual handler function
         llm.register_function("control_browser", control_browser_with_session)
         logger.info("✅ Browser control function registered")
         logger.info(f"✅ Tool available - bot can call control_browser with session_id: {current_session_id[:8]}...")
-        
-        # Log registered function handlers to verify registration
-        if hasattr(llm, '_function_call_handlers'):
-            registered_functions = list(llm._function_call_handlers.keys())
-            logger.info(f"🔧 Functions registered in LLM: {registered_functions}")
-            if "control_browser" not in registered_functions:
-                logger.error("❌ CRITICAL: control_browser NOT found in registered functions!")
-        elif hasattr(llm, 'function_handlers'):
-            registered_functions = list(llm.function_handlers.keys())
-            logger.info(f"🔧 Functions registered in LLM: {registered_functions}")
-            if "control_browser" not in registered_functions:
-                logger.error("❌ CRITICAL: control_browser NOT found in registered functions!")
-        else:
-            logger.warning("⚠️ Could not find function handlers attribute on LLM service - cannot verify registration")
-    
-    # Add event handlers to log function calls
-    @llm.event_handler("on_function_call_start")
-    async def on_function_call_start(llm_service, function_name, arguments):
-        logger.info(f"🎯 LLM IS CALLING FUNCTION: {function_name}")
-        logger.info(f"🎯 Function arguments: {arguments}")
-    
-    @llm.event_handler("on_function_call")
-    async def on_function_call(llm_service, function_name, arguments):
-        logger.info(f"🎯 FUNCTION CALL EVENT: {function_name} with args: {arguments}")
-    
-    # Try to add handler for any function-related events
-    if hasattr(llm, 'on'):
-        try:
-            llm.on("function_call", lambda *args: logger.info(f"🎯 FUNCTION CALL EVENT (via on): {args}"))
-        except:
-            pass
-    
-    # Log all available event handlers
-    if hasattr(llm, '_event_handlers'):
-        logger.info(f"🔧 LLM event handlers: {list(llm._event_handlers.keys()) if hasattr(llm._event_handlers, 'keys') else 'N/A'}")
 
     # Set up conversation context - use LLMContext instead of OpenAILLMContext
     context = LLMContext()
@@ -576,86 +521,17 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
 
     # RTVI events for Pipecat client UI
     rtvi = RTVIProcessor(config=RTVIConfig(config=[]))
-    
-    # Debug processor to see what Gemini is outputting
-    class DebugProcessor(FrameProcessor):
-        """Debug processor to log LLM output frames."""
-        def __init__(self):
-            super().__init__()
-            self.frame_count = 0
-        
-        async def process_frame(self, frame, direction: FrameDirection):
-            self.frame_count += 1
-            frame_type = type(frame).__name__
-            
-            # Log all frames going downstream (from LLM)
-            if direction == FrameDirection.DOWNSTREAM:
-                # Log text frames
-                if isinstance(frame, TextFrame) and frame.text:
-                    logger.info(f"🤖 LLM OUTPUT TEXT (frame #{self.frame_count}): {frame.text[:200]}")
-                # Check for function-related frames by type name or attributes
-                elif 'function' in frame_type.lower() or 'Function' in frame_type:
-                    logger.info(f"🎯🎯🎯 LLM FUNCTION-RELATED FRAME (frame #{self.frame_count}): {frame_type} 🎯🎯🎯")
-                    # Try to get function name and arguments from various possible attributes
-                    if hasattr(frame, 'function_name'):
-                        logger.info(f"🎯   Function name: {frame.function_name}")
-                    elif hasattr(frame, 'name'):
-                        logger.info(f"🎯   Function name (via 'name'): {frame.name}")
-                    if hasattr(frame, 'arguments'):
-                        logger.info(f"🎯   Arguments: {frame.arguments}")
-                    elif hasattr(frame, 'args'):
-                        logger.info(f"🎯   Arguments (via 'args'): {frame.args}")
-                    if hasattr(frame, 'result'):
-                        logger.info(f"🎯   Result: {frame.result}")
-                    # Log all attributes that might contain function info
-                    frame_attrs = [attr for attr in dir(frame) if not attr.startswith('_') and 'function' in attr.lower()]
-                    if frame_attrs:
-                        logger.info(f"🎯   Function-related attributes: {frame_attrs}")
-                # Check for function-related attributes even if type name doesn't suggest it
-                elif hasattr(frame, 'function_name') or hasattr(frame, 'name') and 'function' in str(getattr(frame, 'name', '')).lower():
-                    logger.info(f"🎯🎯🎯 LLM FRAME WITH FUNCTION ATTRIBUTES (frame #{self.frame_count}): {frame_type} 🎯🎯🎯")
-                    if hasattr(frame, 'function_name'):
-                        logger.info(f"🎯   Function name: {frame.function_name}")
-                    if hasattr(frame, 'name'):
-                        logger.info(f"🎯   Name: {frame.name}")
-                    if hasattr(frame, 'arguments'):
-                        logger.info(f"🎯   Arguments: {frame.arguments}")
-                    if hasattr(frame, 'args'):
-                        logger.info(f"🎯   Args: {frame.args}")
-                # Log frame type for debugging (every 10th frame to avoid spam)
-                elif self.frame_count % 10 == 0:
-                    logger.debug(f"📦 Frame #{self.frame_count}: {frame_type}")
-            
-            # Pass frame through
-            await super().process_frame(frame, direction)
-    
-    debug_processor = DebugProcessor()
 
     pipeline = Pipeline(
         [
             transport.input(),
             rtvi,
             context_aggregator.user(),
-            debug_processor,  # Add debug processor before LLM to catch input
             llm,
-            debug_processor,  # Add debug processor after LLM to catch output (function calls)
             transport.output(),
             context_aggregator.assistant(),
         ]
     )
-    
-    # Log final configuration summary
-    logger.info("=" * 80)
-    logger.info("📋 BOT CONFIGURATION SUMMARY")
-    logger.info("=" * 80)
-    logger.info(f"✅ LLM Service: {type(llm).__name__}")
-    logger.info(f"✅ Tools configured: {tools is not None}")
-    logger.info(f"✅ Session ID: {current_session_id[:8] if current_session_id else 'None'}...")
-    logger.info(f"✅ Browser control URL: {BROWSER_CONTROL_URL[:50] if BROWSER_CONTROL_URL else 'None'}...")
-    logger.info(f"✅ Function registered: {current_session_id and BROWSER_CONTROL_URL and tools is not None}")
-    if hasattr(llm, '_function_call_handlers'):
-        logger.info(f"✅ Registered functions: {list(llm._function_call_handlers.keys())}")
-    logger.info("=" * 80)
 
     task = PipelineTask(
         pipeline,
