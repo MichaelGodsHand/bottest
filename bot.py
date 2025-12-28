@@ -153,17 +153,20 @@ When the conversation starts, introduce yourself as {name} and explain that you'
 def get_mongodb_client():
     """Get MongoDB client connection"""
     if not MONGODB_URI:
+        logger.error("❌ MONGODB_URI environment variable is not set")
         return None
     try:
+        logger.info(f"🔌 Connecting to MongoDB: {MONGODB_URI[:20]}...")
         client = MongoClient(MONGODB_URI, serverSelectionTimeoutMS=5000)
         # Test the connection
         client.admin.command('ping')
+        logger.info(f"✅ MongoDB connection successful")
         return client
     except (ConnectionFailure, ServerSelectionTimeoutError) as e:
-        logger.error(f"Failed to connect to MongoDB: {e}")
+        logger.error(f"❌ Failed to connect to MongoDB: {e}")
         return None
     except Exception as e:
-        logger.error(f"Error connecting to MongoDB: {e}")
+        logger.error(f"❌ Error connecting to MongoDB: {e}", exc_info=True)
         return None
 
 
@@ -177,34 +180,59 @@ def get_agent_from_mongodb(agent_id: str) -> Optional[Dict]:
     Returns:
         Agent document or None if not found
     """
+    logger.info(f"🔍 Attempting to get agent from MongoDB: agent_id={agent_id}")
     client = get_mongodb_client()
     if not client:
+        logger.error(f"❌ MongoDB client is None - cannot connect to MongoDB")
         return None
     
     try:
         db = client["demify"]
         agents_collection = db["agents"]
+        logger.info(f"🔍 Connected to MongoDB, searching for agent_id: {agent_id}")
         
         # Try to find by ObjectId first
+        agent = None
         try:
+            logger.info(f"🔍 Trying ObjectId conversion for: {agent_id}")
             agent = agents_collection.find_one({"_id": ObjectId(agent_id)})
-        except:
+            if agent:
+                logger.info(f"✅ Found agent using ObjectId")
+        except Exception as obj_id_error:
+            logger.warning(f"⚠️ ObjectId conversion failed: {obj_id_error}, trying as string")
             # If ObjectId conversion fails, try as string
             agent = agents_collection.find_one({"_id": agent_id})
+            if agent:
+                logger.info(f"✅ Found agent using string ID")
         
         if agent:
             # Convert ObjectId to string for JSON serialization
             agent["_id"] = str(agent["_id"])
             if "ownerId" in agent and isinstance(agent["ownerId"], ObjectId):
                 agent["ownerId"] = str(agent["ownerId"])
-        
-        return agent
+            
+            logger.info(f"✅ Successfully retrieved agent: {agent.get('name', 'Unknown')}")
+            logger.info(f"📋 Agent has config: {bool(agent.get('agentConfig'))}")
+            if agent.get('agentConfig'):
+                config = agent.get('agentConfig', {})
+                logger.info(f"📋 Config details: tone={config.get('tone')}, goal={config.get('goal')}, steps={len(config.get('demo', []))}")
+            return agent
+        else:
+            logger.warning(f"⚠️ Agent not found in MongoDB with ID: {agent_id}")
+            # List all available agent IDs for debugging
+            try:
+                all_agents = list(agents_collection.find({}, {"_id": 1, "name": 1}).limit(5))
+                logger.info(f"📋 Available agents in DB (first 5): {[str(a.get('_id')) for a in all_agents]}")
+            except:
+                pass
+            return None
         
     except Exception as e:
         logger.error(f"❌ Error getting agent from MongoDB: {e}", exc_info=True)
         return None
     finally:
-        client.close()
+        if client:
+            client.close()
 
 
 def fix_credentials():
@@ -361,6 +389,8 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
     demo_steps = []
     current_demo_step = 0
     
+    logger.info(f"🔍 run_bot called with: agent_id={agent_id}, session_id={session_id[:8] if session_id else None}...")
+    
     if agent_id:
         logger.info(f"📥 Loading agent data for agent_id: {agent_id}")
         agent_data = get_agent_from_mongodb(agent_id)
@@ -368,6 +398,10 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
             agent_config = agent_data.get("agentConfig", {})
             demo_steps = agent_config.get("demo", [])
             logger.info(f"✅ Loaded agent: {agent_data.get('name')} with {len(demo_steps)} demo steps")
+            logger.info(f"📋 Agent config: name={agent_data.get('name')}, tone={agent_config.get('tone')}, goal={agent_config.get('goal')}")
+            logger.info(f"📋 Demo steps count: {len(demo_steps)}")
+            if demo_steps:
+                logger.info(f"📋 First step: {demo_steps[0].get('title', 'N/A')}")
             
             # Store agent data - we'll get room_url later when transport is ready
             # For now, store by session_id as fallback
@@ -376,6 +410,10 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
                 _room_demo_steps[session_id] = 0
         else:
             logger.warning(f"⚠️ Agent {agent_id} not found in MongoDB, proceeding without demo steps")
+            agent_data = None
+    else:
+        logger.warning(f"⚠️ No agent_id provided to run_bot, using default system instruction")
+        agent_data = None
     
     # Initialize the Gemini Multimodal Live model with Vertex AI
     voice_name = os.getenv("GEMINI_VOICE_NAME", "Charon")
@@ -400,6 +438,13 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
     
     # Build system instruction based on agent data
     system_instruction = build_system_instruction(agent_data)
+    logger.info(f"📝 System instruction built (length: {len(system_instruction)} chars)")
+    if agent_data:
+        logger.info(f"📝 Using agent-specific instruction for: {agent_data.get('name', 'Unknown')}")
+        # Log first 200 chars of instruction to verify it's custom
+        logger.info(f"📝 Instruction preview: {system_instruction[:200]}...")
+    else:
+        logger.info(f"📝 Using default system instruction (no agent_data)")
     
     # Get site URL from agent data if available
     site_url = None
@@ -526,6 +571,7 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
 async def join_room_task(room_url: str, room_token: str = None, session_id: Optional[str] = None, agent_id: Optional[str] = None):
     """Join a Daily room and run the bot."""
     logger.info(f"🤖 Joining room: {room_url}")
+    logger.info(f"📋 Parameters: session_id={session_id[:8] if session_id else None}..., agent_id={agent_id}")
     
     # Store session_id for this room
     if session_id:
@@ -535,6 +581,8 @@ async def join_room_task(room_url: str, room_token: str = None, session_id: Opti
     # Store agent_id for this room
     if agent_id:
         logger.info(f"📝 Agent ID for this room: {agent_id}")
+    else:
+        logger.warning(f"⚠️ No agent_id provided to join_room_task - bot will use default system instruction")
     
     # Krisp filter is optional - disable for local development
     krisp_filter = None
