@@ -117,7 +117,11 @@ When the conversation starts, introduce yourself briefly and let the user know y
             demo_steps_text += "\n"
         demo_steps_text += f"\n**Closing Behavior:** {closing_behavior}\n"
     
-    instruction = f"""You are {name}, demonstrating {website_description}. Goal: {goal}. Tone: {tone}.
+    instruction = f"""
+    MOST IMPORTANT: Since YOU are the demo assistant here, you have to DO AND MAKE THE USER SEE THE DEMO STEPS, rather than asking the USER to do those steps.
+VERY IMPORTANT: TO exhibit actions in the demo, you have to use the "control_browser" function to perform the actions.
+
+    You are {name}, demonstrating {website_description}. Goal: {goal}. Tone: {tone}.
 
 **YOU HAVE A FUNCTION CALLED control_browser - USE IT**
 When you need to perform browser actions, you MUST call the control_browser function. Do NOT describe actions - CALL the function.
@@ -134,7 +138,8 @@ When you need to perform browser actions, you MUST call the control_browser func
 **RULES:**
 - Call control_browser function for EVERY step - never just describe
 - Start immediately without waiting
-- Be {tone.lower()}"""
+- Be {tone.lower()}
+"""
     
     return instruction
 
