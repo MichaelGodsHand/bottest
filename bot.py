@@ -117,52 +117,24 @@ When the conversation starts, introduce yourself briefly and let the user know y
             demo_steps_text += "\n"
         demo_steps_text += f"\n**Closing Behavior:** {closing_behavior}\n"
     
-    instruction = f"""Your name is {name}, an AI instructor that can see and control a browser in real-time.
+    instruction = f"""You are {name}, demonstrating {website_description}. Goal: {goal}. Tone: {tone}.
 
-**YOUR ROLE:**
-You are an INSTRUCTOR demonstrating {website_description}. Your goal is: {goal}. Your tone should be: {tone}.
+**YOU HAVE A FUNCTION CALLED control_browser - USE IT**
+When you need to perform browser actions, you MUST call the control_browser function. Do NOT describe actions - CALL the function.
 
-**CRITICAL: YOU ARE THE ONE PERFORMING THE DEMO**
-You are NOT instructing the user what to do. You are the INSTRUCTOR actively performing the demo yourself. You control the browser directly using the control_browser function. The user is watching YOU perform the demo.
-
-**YOUR TASK:**
-You are conducting a live demo where YOU actively navigate and interact with the website. Your job is to:
-1. AUTOMATICALLY start the demo by performing Step 1 using control_browser - do NOT wait for the user to ask
-2. Actively perform each demo step yourself using control_browser - YOU click buttons, fill forms, navigate pages
-3. Explain what you're doing as you perform each action
-4. Guide the user's understanding by pointing out what's happening on screen
-5. Speak naturally and conversationally, matching your tone: {tone}
-
-**BROWSER CONTROL - YOU PERFORM ACTIONS:**
-You MUST use the control_browser function to perform ALL demo actions. YOU are the one clicking, navigating, and interacting - not the user.
-- CRITICAL: When a demo step requires an action, YOU must call control_browser to perform it immediately
-- Do NOT say "click the button" or "navigate to the page" - instead, YOU call control_browser to do it
-- IMPORTANT: When using control_browser, ALWAYS end the action description with "and do NOTHING else"
-- Always include the session_id in your function call
-- After calling control_browser, explain what you just did and what the user should notice
-
-**DEMO FLOW - YOU TAKE THE LEAD:**
-You should automatically perform the demo steps in order. YOU initiate each step:
-1. Call control_browser to perform the action for the current step
-2. Wait for the action to complete (you'll see the result)
-3. Explain what happened and what the user should notice
-4. Move to the next step and repeat
-
-Start with Step 1 immediately - do NOT wait for the user to ask. YOU begin the demo.
+**DEMO STEPS:**
 {demo_steps_text}
-**CONVERSATION STYLE:**
-- Be {tone.lower()}
-- Use "I'm going to..." or "Let me..." when performing actions (e.g., "I'm going to click the sign-in button now")
-- Explain what you're doing as you do it
-- Point out what the user should notice on screen
-- Be engaging and conversational
-- Don't rush - give the user time to see what's happening
-- Remember: YOU are performing the actions, not instructing the user to do them
+**START THE DEMO:**
+1. Say: "Hi, I'm {name}. I'll show you {website_description}."
+2. IMMEDIATELY call control_browser with Step 1's action (from the demo steps above)
+3. When function completes, explain what happened
+4. Call control_browser with Step 2's action
+5. Continue for all steps
 
-**WHEN THE CONVERSATION STARTS:**
-1. Introduce yourself as {name} and explain that you're going to demonstrate {website_description}
-2. IMMEDIATELY begin Step 1 by calling control_browser to perform the first action
-3. Do NOT wait for the user to ask - YOU start the demo automatically"""
+**RULES:**
+- Call control_browser function for EVERY step - never just describe
+- Start immediately without waiting
+- Be {tone.lower()}"""
     
     return instruction
 
@@ -472,10 +444,18 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
     tools = None
     if current_session_id and BROWSER_CONTROL_URL:
         # Build description with demo context if available
-        description = "Control the browser that is sharing its screen. YOU use this function to actively perform actions in the demo - clicking buttons, navigating pages, filling forms, etc. The action MUST end with 'and do NOTHING else'. IMPORTANT: Always include the session_id in your function call. YOU are the one performing the demo, not instructing the user."
+        description = """CRITICAL: This function allows you to control the browser. When you need to perform ANY action (click button, navigate, fill form), you MUST call this function. Do NOT just describe what should happen - actually CALL this function.
+
+Parameters:
+- url: The website URL (use the site URL from the demo)
+- action: What to do (e.g., "Click the sign-in button and do NOTHING else", "Navigate to the homepage and do NOTHING else")
+- session_id: Always use the session_id provided below
+- max_steps: Default 20
+
+IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always include session_id."""
         
         if demo_steps:
-            description += f"\n\nYou have {len(demo_steps)} demo steps to perform. YOU must actively execute each step's action using this function. Start with Step 1 immediately when the demo begins. After calling this function for a step, explain what you did and what the user should notice, then move to the next step."
+            description += f"\n\nYou have {len(demo_steps)} demo steps. For EACH step, you MUST call this function with the action from that step. Start with Step 1 immediately - call this function right away, do not wait."
         
         browser_control_function = FunctionSchema(
             name="control_browser",
@@ -512,7 +492,7 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
         model=model_path,
         voice_id=voice_name,
         system_instruction=system_instruction,
-        temperature=0.8,
+        temperature=0.3,
         tools=tools,
     )
     
@@ -521,12 +501,14 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
         # Create a closure that captures the session_id
         async def control_browser_with_session(params: FunctionCallParams):
             # Inject session_id if not provided
-            if "session_id" not in params.arguments:
+            if "session_id" not in params.arguments or not params.arguments.get("session_id"):
                 params.arguments["session_id"] = current_session_id
+            logger.info(f"🔧 Function called: control_browser with url={params.arguments.get('url')}, action={params.arguments.get('action', '')[:60]}..., session_id={params.arguments.get('session_id', '')[:8]}")
             await control_browser(params)
         
         llm.register_function("control_browser", control_browser_with_session)
         logger.info("✅ Browser control function registered")
+        logger.info(f"✅ Tool available - bot can call control_browser with session_id: {current_session_id[:8]}...")
 
     # Set up conversation context - use LLMContext instead of OpenAILLMContext
     context = LLMContext()
