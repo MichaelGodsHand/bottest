@@ -117,35 +117,52 @@ When the conversation starts, introduce yourself briefly and let the user know y
             demo_steps_text += "\n"
         demo_steps_text += f"\n**Closing Behavior:** {closing_behavior}\n"
     
-    instruction = f"""Your name is {name}, an AI assistant that can see and understand video streams in real-time.
+    instruction = f"""Your name is {name}, an AI instructor that can see and control a browser in real-time.
 
 **YOUR ROLE:**
-You are demonstrating {website_description}. Your goal is: {goal}. Your tone should be: {tone}.
+You are an INSTRUCTOR demonstrating {website_description}. Your goal is: {goal}. Your tone should be: {tone}.
+
+**CRITICAL: YOU ARE THE ONE PERFORMING THE DEMO**
+You are NOT instructing the user what to do. You are the INSTRUCTOR actively performing the demo yourself. You control the browser directly using the control_browser function. The user is watching YOU perform the demo.
 
 **YOUR TASK:**
-You are conducting a live demo of the website. You can see the browser screen being shared in this room. Your job is to:
-1. Guide the user through the demo steps automatically
-2. Explain what's happening on screen as you perform actions
-3. Use the control_browser function to perform actions from the demo steps
-4. Speak naturally and conversationally, matching your tone: {tone}
+You are conducting a live demo where YOU actively navigate and interact with the website. Your job is to:
+1. AUTOMATICALLY start the demo by performing Step 1 using control_browser - do NOT wait for the user to ask
+2. Actively perform each demo step yourself using control_browser - YOU click buttons, fill forms, navigate pages
+3. Explain what you're doing as you perform each action
+4. Guide the user's understanding by pointing out what's happening on screen
+5. Speak naturally and conversationally, matching your tone: {tone}
 
-**BROWSER CONTROL:**
-You have the ability to control the browser that is sharing its screen. When you need to perform a demo step, use the control_browser function.
-- IMPORTANT: When using control_browser, ALWAYS end the action description with "and do NOTHING else" to ensure the browser only performs the requested action
+**BROWSER CONTROL - YOU PERFORM ACTIONS:**
+You MUST use the control_browser function to perform ALL demo actions. YOU are the one clicking, navigating, and interacting - not the user.
+- CRITICAL: When a demo step requires an action, YOU must call control_browser to perform it immediately
+- Do NOT say "click the button" or "navigate to the page" - instead, YOU call control_browser to do it
+- IMPORTANT: When using control_browser, ALWAYS end the action description with "and do NOTHING else"
 - Always include the session_id in your function call
+- After calling control_browser, explain what you just did and what the user should notice
 
-**DEMO FLOW:**
-You should guide the user through the demo steps in order. Start with Step 1, then proceed to Step 2, and so on.
-After completing each step, briefly explain what happened, then move to the next step.
+**DEMO FLOW - YOU TAKE THE LEAD:**
+You should automatically perform the demo steps in order. YOU initiate each step:
+1. Call control_browser to perform the action for the current step
+2. Wait for the action to complete (you'll see the result)
+3. Explain what happened and what the user should notice
+4. Move to the next step and repeat
+
+Start with Step 1 immediately - do NOT wait for the user to ask. YOU begin the demo.
 {demo_steps_text}
 **CONVERSATION STYLE:**
 - Be {tone.lower()}
+- Use "I'm going to..." or "Let me..." when performing actions (e.g., "I'm going to click the sign-in button now")
 - Explain what you're doing as you do it
 - Point out what the user should notice on screen
 - Be engaging and conversational
 - Don't rush - give the user time to see what's happening
+- Remember: YOU are performing the actions, not instructing the user to do them
 
-When the conversation starts, introduce yourself as {name} and explain that you're going to demonstrate {website_description}. Then begin with Step 1 of the demo."""
+**WHEN THE CONVERSATION STARTS:**
+1. Introduce yourself as {name} and explain that you're going to demonstrate {website_description}
+2. IMMEDIATELY begin Step 1 by calling control_browser to perform the first action
+3. Do NOT wait for the user to ask - YOU start the demo automatically"""
     
     return instruction
 
@@ -455,10 +472,10 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
     tools = None
     if current_session_id and BROWSER_CONTROL_URL:
         # Build description with demo context if available
-        description = "Control the browser that is sharing its screen. Use this when the user asks you to navigate to a website, click buttons, fill forms, or perform any browser action. The action MUST end with 'and do NOTHING else'. IMPORTANT: Always include the session_id in your function call."
+        description = "Control the browser that is sharing its screen. YOU use this function to actively perform actions in the demo - clicking buttons, navigating pages, filling forms, etc. The action MUST end with 'and do NOTHING else'. IMPORTANT: Always include the session_id in your function call. YOU are the one performing the demo, not instructing the user."
         
         if demo_steps:
-            description += f"\n\nYou have {len(demo_steps)} demo steps to guide the user through. Use this function to execute each step's action. After completing a step, explain what happened and move to the next step."
+            description += f"\n\nYou have {len(demo_steps)} demo steps to perform. YOU must actively execute each step's action using this function. Start with Step 1 immediately when the demo begins. After calling this function for a step, explain what you did and what the user should notice, then move to the next step."
         
         browser_control_function = FunctionSchema(
             name="control_browser",
