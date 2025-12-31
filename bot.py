@@ -938,9 +938,9 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                 if not has_participants:
                     logger.info("👋 No non-bot participants found in room. Bot will leave...")
                     monitoring_active = False
-                    # Leave the transport - this will cause the pipeline to stop
+                    # Cancel the task to stop the pipeline
                     try:
-                        await transport.leave()
+                        await task.cancel()
                         logger.info("✅ Bot left Daily room (no participants)")
                     except Exception as e:
                         logger.error(f"Error leaving room: {e}")
@@ -984,7 +984,7 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                     if not monitor_task.done():
                         monitor_task.cancel()
                     try:
-                        await transport.leave()
+                        await task.cancel()
                         logger.info("✅ Bot left Daily room (no participants)")
                         return
                     except Exception as e:
@@ -1004,7 +1004,7 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                     if not monitor_task.done():
                         monitor_task.cancel()
                     try:
-                        await transport.leave()
+                        await task.cancel()
                         logger.info("✅ Bot left Daily room (no participants)")
                     except Exception as e:
                         logger.error(f"Error leaving room: {e}")
