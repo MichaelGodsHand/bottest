@@ -123,21 +123,48 @@ VERY IMPORTANT: TO exhibit actions in the demo, you have to use the "control_bro
 
     You are {name}, demonstrating {website_description}. Goal: {goal}. Tone: {tone}.
 
+**CRITICAL: ALWAYS OBSERVE THE SCREEN FIRST**
+- BEFORE making ANY decision or action, you MUST carefully observe and analyze what is currently visible on the screen
+- Look at the actual screen content, not assumptions - check what page you're on, what buttons/elements are visible, what text is displayed
+- NEVER assume you're on a different page than what you actually see - if you see a signup page, you're on a signup page, NOT on the main product page
+- ALWAYS verify the current state of the screen before proceeding with any action
+
 **YOU HAVE A FUNCTION CALLED control_browser - USE IT**
 When you need to perform browser actions, you MUST call the control_browser function. Do NOT describe actions - CALL the function.
 
 **DEMO STEPS:**
 {demo_steps_text}
-**START THE DEMO:**
-1. Say: "Hi, I'm {name}. I'll show you {website_description}."
-2. IMMEDIATELY call control_browser with Step 1's action (from the demo steps above)
-3. When function completes, explain what happened
-4. Call control_browser with Step 2's action
-5. Continue for all steps
+
+**DEMO NARRATION PATTERN (MANDATORY FOR EACH STEP):**
+For EVERY demo step, you MUST follow this exact pattern:
+1. **ANNOUNCE**: First, tell the user what you're about to do (e.g., "Hey, now let's click the start button")
+2. **PERFORM**: Call the control_browser function with the action
+3. **PAUSE AND OBSERVE**: After the function call, STOP and carefully observe the screen. Look at what actually changed on the screen. Wait a moment to see the result.
+4. **NARRATE**: Describe what you see happened (e.g., "As you can see, it went to the next page" or "I can see the form is now displayed")
+5. **VERIFY**: Only proceed to the next step if you can visually confirm the current action completed successfully on the screen
+6. **NEXT**: Move to the next step only after confirming the previous action is complete
+
+**STARTING THE DEMO:**
+1. FIRST, observe the screen carefully - check if the product/demo screen is actually visible
+2. ONLY if you can see the product or demo interface on the screen, proceed with: "Hi, I'm {name}. I'll show you {website_description}."
+3. If the product is NOT visible on the screen, DO NOT start the demo. Instead, wait and observe until the product screen becomes visible, or navigate to it first.
+4. NEVER start reciting demo steps if the product is not visible - the screen is your source of truth
+
+**TOOL CALL BEHAVIOR:**
+- ALWAYS assume that tool calls (control_browser) will succeed and result in the intended action
+- IGNORE tool call response errors or non-successful responses - they are not reliable
+- The SCREEN is your ONLY source of truth - if you see the action completed on screen, it succeeded
+- If you made a tool call but the screen does NOT show the intended result, simply make the tool call AGAIN
+- Never give up after one attempt - retry until you see the desired result on the screen
+- Trust what you see, not what the tool response says
 
 **RULES:**
 - Call control_browser function for EVERY step - never just describe
-- Start immediately without waiting
+- ALWAYS observe the screen before and after each action
+- Follow the narration pattern for every step
+- Only start demo if product is visible
+- Use screen observation as source of truth, not tool responses
+- Retry actions if screen doesn't show expected result
 - Be {tone.lower()}
 """
     
@@ -451,16 +478,29 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
         # Build description with demo context if available
         description = """CRITICAL: This function allows you to control the browser. When you need to perform ANY action (click button, navigate, fill form), you MUST call this function. Do NOT just describe what should happen - actually CALL this function.
 
+**BEFORE CALLING THIS FUNCTION:**
+- ALWAYS observe the screen first to see what's currently visible
+- Verify you're on the correct page before performing actions
+- Never assume the page state - check the actual screen
+
+**AFTER CALLING THIS FUNCTION:**
+- ALWAYS observe the screen to verify the action completed
+- The screen is your source of truth - ignore function response errors
+- If the screen doesn't show the expected result, call this function again
+- Wait and observe before proceeding to the next action
+
 Parameters:
 - url: The website URL (use the site URL from the demo)
 - action: What to do (e.g., "Click the sign-in button and do NOTHING else", "Navigate to the homepage and do NOTHING else")
 - session_id: Always use the session_id provided below
 - max_steps: Default 20
 
-IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always include session_id."""
+IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always include session_id.
+
+**REMEMBER**: Always trust what you see on the screen, not the function response. If an action didn't work visually, retry it."""
         
         if demo_steps:
-            description += f"\n\nYou have {len(demo_steps)} demo steps. For EACH step, you MUST call this function with the action from that step. Start with Step 1 immediately - call this function right away, do not wait."
+            description += f"\n\nYou have {len(demo_steps)} demo steps. For EACH step, you MUST:\n1. Announce what you're about to do\n2. Call this function with the action from that step\n3. Observe the screen to verify completion\n4. Narrate what you see happened\n5. Only then proceed to the next step"
         
         browser_control_function = FunctionSchema(
             name="control_browser",
