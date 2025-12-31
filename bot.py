@@ -54,6 +54,9 @@ load_dotenv(override=True)
 # Browser control endpoint URL from environment
 BROWSER_CONTROL_URL = os.getenv("BROWSER_CONTROL_URL", "")
 
+# Browser streaming endpoint URL (for stopping streaming bot)
+BROWSER_STREAMING_URL = os.getenv("BROWSER_CONTROL_URL", "").rstrip('/')  # Same base URL as browser control
+
 # MongoDB configuration
 MONGODB_URI = os.getenv("MONGODB_URI", "")
 
@@ -618,6 +621,37 @@ def fix_credentials():
     return json.dumps(creds_dict)
 
 
+async def stop_streaming_bot(session_id: str):
+    """
+    Notify the browseruseop service to stop the streaming bot for a session.
+    Called when the Gemini bot leaves the room.
+    """
+    if not BROWSER_STREAMING_URL:
+        logger.warning("BROWSER_CONTROL_URL not set - cannot stop streaming bot")
+        return
+    
+    endpoint_url = f"{BROWSER_STREAMING_URL}/streaming/stop-bot/{session_id}"
+    
+    logger.info(f"🛑 Calling stop streaming bot endpoint: {endpoint_url}")
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.post(
+                endpoint_url,
+                timeout=aiohttp.ClientTimeout(total=10),
+            ) as response:
+                if response.status == 200:
+                    result = await response.json()
+                    logger.info(f"✅ Streaming bot stopped: {result.get('message', 'success')}")
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"⚠️ Failed to stop streaming bot: {response.status} - {error_text}")
+    except asyncio.TimeoutError:
+        logger.warning("⚠️ Stop streaming bot request timed out")
+    except Exception as e:
+        logger.warning(f"⚠️ Error stopping streaming bot: {e}")
+
+
 async def control_browser(params: FunctionCallParams):
     """
     Control the browser by making a request to the browseruseop endpoint.
@@ -938,6 +972,12 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                 if not has_participants:
                     logger.info("👋 No non-bot participants found in room. Bot will leave...")
                     monitoring_active = False
+                    # Stop streaming bot before leaving
+                    if current_session_id and BROWSER_STREAMING_URL:
+                        try:
+                            await stop_streaming_bot(current_session_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to stop streaming bot: {e}")
                     # Cancel the task to stop the pipeline
                     try:
                         await task.cancel()
@@ -983,6 +1023,12 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                     monitoring_active = False
                     if not monitor_task.done():
                         monitor_task.cancel()
+                    # Stop streaming bot before leaving
+                    if current_session_id and BROWSER_STREAMING_URL:
+                        try:
+                            await stop_streaming_bot(current_session_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to stop streaming bot: {e}")
                     try:
                         await task.cancel()
                         logger.info("✅ Bot left Daily room (no participants)")
@@ -1003,6 +1049,12 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                     monitoring_active = False
                     if not monitor_task.done():
                         monitor_task.cancel()
+                    # Stop streaming bot before leaving
+                    if current_session_id and BROWSER_STREAMING_URL:
+                        try:
+                            await stop_streaming_bot(current_session_id)
+                        except Exception as e:
+                            logger.warning(f"Failed to stop streaming bot: {e}")
                     try:
                         await task.cancel()
                         logger.info("✅ Bot left Daily room (no participants)")
