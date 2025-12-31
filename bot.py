@@ -415,16 +415,27 @@ async def has_non_bot_participants(meeting_url: str) -> bool:
     """
     room_name = extract_room_name_from_url(meeting_url)
     if not room_name:
+        logger.debug("No room name extracted from URL")
         return False
     
     meeting_id = await get_meeting_id_for_room(room_name)
     if not meeting_id:
+        logger.debug("No meeting ID found for room")
         return False
     
     participants = await get_room_participants(meeting_id)
+    logger.info(f"📊 Checking participants: found {len(participants)} total participants")
+    
+    # Log all participants for debugging
+    for p in participants:
+        user_name = p.get('user_name', 'None')
+        user_id = p.get('user_id', 'None')
+        is_bot = is_bot_participant(p)
+        logger.info(f"   👤 Participant: name={user_name}, user_id={user_id}, is_bot={is_bot}")
     
     # Check if there's at least one non-bot participant
     user_participants = [p for p in participants if not is_bot_participant(p)]
+    logger.info(f"📊 Found {len(user_participants)} non-bot participants")
     
     return len(user_participants) > 0
 
@@ -946,21 +957,30 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         participant_id = participant.get("id") if isinstance(participant, dict) else participant
         logger.info(f"👋 Participant left: {participant_id}, reason: {reason}")
         
-        # Check immediately if we should leave
+        # Wait a moment for the API to update, then check if we should leave
         if room_url:
             try:
+                # Give the API a moment to reflect the participant leaving
+                await asyncio.sleep(2.0)
+                
+                logger.info(f"🔍 Checking if bot should leave after participant left...")
                 has_participants = await has_non_bot_participants(room_url)
+                logger.info(f"🔍 Participant check result: has_participants={has_participants}")
+                
                 if not has_participants:
                     logger.info("👋 No non-bot participants remaining. Bot will leave...")
                     monitoring_active = False
-                    monitor_task.cancel()
+                    if not monitor_task.done():
+                        monitor_task.cancel()
                     try:
                         await transport.leave()
                         logger.info("✅ Bot left Daily room (no participants)")
                     except Exception as e:
                         logger.error(f"Error leaving room: {e}")
+                else:
+                    logger.info("👋 Other participants still in room, bot will stay")
             except Exception as e:
-                logger.debug(f"Error checking participants after leave: {e}")
+                logger.error(f"Error checking participants after leave: {e}", exc_info=True)
 
     runner = PipelineRunner(handle_sigint=True)
 
