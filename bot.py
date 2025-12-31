@@ -403,6 +403,32 @@ async def get_room_participants(meeting_id: str) -> list:
         return []
 
 
+async def has_non_bot_participants(meeting_url: str) -> bool:
+    """
+    Check if there are any non-bot participants in the room.
+    
+    Args:
+        meeting_url: Daily.co meeting URL
+        
+    Returns:
+        bool: True if there are non-bot participants, False otherwise
+    """
+    room_name = extract_room_name_from_url(meeting_url)
+    if not room_name:
+        return False
+    
+    meeting_id = await get_meeting_id_for_room(room_name)
+    if not meeting_id:
+        return False
+    
+    participants = await get_room_participants(meeting_id)
+    
+    # Check if there's at least one non-bot participant
+    user_participants = [p for p in participants if not is_bot_participant(p)]
+    
+    return len(user_participants) > 0
+
+
 def is_bot_participant(participant: dict) -> bool:
     """
     Check if a participant is a bot (streaming bot or other automated participant).
@@ -657,7 +683,7 @@ async def control_browser(params: FunctionCallParams):
         })
 
 
-async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, agent_id: Optional[str] = None):
+async def run_bot(transport: DailyTransport, room_url: str, session_id: Optional[str] = None, agent_id: Optional[str] = None):
     """Main bot execution function.
 
     Sets up and runs the bot pipeline including:
@@ -803,7 +829,7 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         model=model_path,
         voice_id=voice_name,
         system_instruction=system_instruction,
-        temperature=0.3,
+        temperature=0.8,
         tools=tools,
     )
     
@@ -872,10 +898,83 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
     async def on_first_participant_joined(transport, participant):
         """Handle the first participant joining."""
         await task.queue_frames([LLMRunFrame()])
+    
+    # Start participant monitoring task
+    monitoring_active = True
+    
+    async def monitor_participants():
+        """Monitor participants and leave if no non-bot participants remain."""
+        check_interval = 5.0  # Check every 5 seconds
+        logger.info(f"👀 Starting participant monitoring (checking every {check_interval} seconds)")
+        
+        while monitoring_active:
+            try:
+                if not room_url:
+                    logger.debug("No room URL available for monitoring")
+                    await asyncio.sleep(check_interval)
+                    continue
+                
+                # Check if there are any non-bot participants
+                has_participants = await has_non_bot_participants(room_url)
+                
+                if not has_participants:
+                    logger.info("👋 No non-bot participants found in room. Bot will leave...")
+                    monitoring_active = False
+                    # Leave the transport - this will cause the pipeline to stop
+                    try:
+                        await transport.leave()
+                        logger.info("✅ Bot left Daily room (no participants)")
+                    except Exception as e:
+                        logger.error(f"Error leaving room: {e}")
+                    break
+                
+            except Exception as e:
+                logger.debug(f"Error checking participants: {e}")
+                # Continue monitoring even on error
+            
+            # Wait before next check
+            await asyncio.sleep(check_interval)
+        
+        logger.info("🛑 Participant monitoring stopped")
+    
+    # Start monitoring task
+    monitor_task = asyncio.create_task(monitor_participants())
+    
+    @transport.event_handler("on_participant_left")
+    async def on_participant_left(transport, participant, reason):
+        """Handle when a participant leaves the room."""
+        participant_id = participant.get("id") if isinstance(participant, dict) else participant
+        logger.info(f"👋 Participant left: {participant_id}, reason: {reason}")
+        
+        # Check immediately if we should leave
+        if room_url:
+            try:
+                has_participants = await has_non_bot_participants(room_url)
+                if not has_participants:
+                    logger.info("👋 No non-bot participants remaining. Bot will leave...")
+                    monitoring_active = False
+                    monitor_task.cancel()
+                    try:
+                        await transport.leave()
+                        logger.info("✅ Bot left Daily room (no participants)")
+                    except Exception as e:
+                        logger.error(f"Error leaving room: {e}")
+            except Exception as e:
+                logger.debug(f"Error checking participants after leave: {e}")
 
     runner = PipelineRunner(handle_sigint=True)
 
-    await runner.run(task)
+    try:
+        await runner.run(task)
+    finally:
+        # Stop monitoring when bot stops
+        monitoring_active = False
+        if not monitor_task.done():
+            monitor_task.cancel()
+            try:
+                await monitor_task
+            except asyncio.CancelledError:
+                pass
 
 
 async def join_room_task(room_url: str, room_token: str = None, session_id: Optional[str] = None, agent_id: Optional[str] = None):
@@ -928,7 +1027,7 @@ async def join_room_task(room_url: str, room_token: str = None, session_id: Opti
         )
     )
 
-    await run_bot(transport, session_id=session_id, agent_id=agent_id)
+    await run_bot(transport, room_url=room_url, session_id=session_id, agent_id=agent_id)
 
 
 async def main():
