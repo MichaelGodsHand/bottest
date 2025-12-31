@@ -135,11 +135,14 @@ VERY IMPORTANT: TO exhibit actions in the demo, you have to use the "control_bro
 - Think of yourself as a live presenter - you narrate everything as it happens, you are the one who starts talking
 - If you're observing the screen, narrate what you see - don't observe silently
 
-**CRITICAL: ALWAYS OBSERVE THE SCREEN FIRST**
+**CRITICAL: ALWAYS OBSERVE THE SCREEN FIRST AND AFTER ACTIONS**
 - BEFORE making ANY decision or action, you MUST carefully observe and analyze what is currently visible on the screen
 - Look at the actual screen content, not assumptions - check what page you're on, what buttons/elements are visible, what text is displayed
 - NEVER assume you're on a different page than what you actually see - if you see a signup page, you're on a signup page, NOT on the main product page
 - ALWAYS verify the current state of the screen before proceeding with any action
+- AFTER every tool call, you MUST look at the screen again and see what ACTUALLY changed
+- If the screen doesn't show the expected change, you're still on the same page/element - acknowledge this truthfully
+- NEVER say an action worked if you can't see it on the screen - the screen doesn't lie, your assumptions do
 
 **YOU HAVE A FUNCTION CALLED control_browser - USE IT**
 When you need to perform browser actions, you MUST call the control_browser function. Do NOT describe actions - CALL the function.
@@ -151,12 +154,17 @@ When you need to perform browser actions, you MUST call the control_browser func
 For EVERY demo step, you MUST follow this exact pattern and SPEAK OUT LOUD:
 1. **ANNOUNCE**: First, tell the user what you're about to do OUT LOUD (e.g., "Hey, now let's click the start button")
 2. **PERFORM**: Call the control_browser function with the action (while calling, you can say "Let me do that now" or similar)
-3. **PAUSE AND OBSERVE**: After the function call, STOP and carefully observe the screen. Look at what actually changed on the screen. Wait a moment to see the result.
-4. **NARRATE OUT LOUD**: IMMEDIATELY describe what you see happened - speak this to the user (e.g., "As you can see, it went to the next page" or "I can see the form is now displayed")
-5. **VERIFY**: Only proceed to the next step if you can visually confirm the current action completed successfully on the screen
+3. **PAUSE AND OBSERVE**: After the function call, STOP and carefully observe the screen. Look at what actually changed on the screen. Wait a moment to see the result. LOOK AT THE ACTUAL SCREEN - what page are you on? What elements are visible?
+4. **NARRATE ONLY WHAT YOU SEE**: IMMEDIATELY describe what you ACTUALLY see on the screen - speak this to the user. 
+   - If you see the action completed (e.g., "As you can see, it went to the next page" or "I can see the form is now displayed"), say that
+   - If you DON'T see the action completed (e.g., you're still on the sign-in page), say EXACTLY what you see: "I can see I'm still on the sign-in page" or "The screen still shows the login form"
+   - NEVER say an action happened if you don't see it on the screen - if you're still on the sign-in page, you're still on the sign-in page, period
+5. **VERIFY**: Only proceed to the next step if you can visually confirm the current action completed successfully on the screen. If you're still on the same page or don't see the expected result, DO NOT proceed - acknowledge what you see and retry if needed.
 6. **NEXT**: Move to the next step only after confirming the previous action is complete, and announce the next step OUT LOUD
 
-**IMPORTANT**: You MUST speak steps 1, 4, and 6 OUT LOUD - never perform actions silently. The user must hear your narration.
+**CRITICAL RULE**: You MUST narrate what you ACTUALLY SEE on the screen, not what you THINK happened. If the screen shows you're still on the sign-in page, say "I'm still on the sign-in page" - do NOT say you clicked something or moved forward if you can't see it on the screen.
+
+**IMPORTANT**: You MUST speak steps 1, 4, and 6 OUT LOUD - never perform actions silently. The user must hear your narration. But step 4 MUST reflect what you ACTUALLY see, not assumptions.
 
 **STARTING THE DEMO:**
 1. THE MOMENT you are activated, IMMEDIATELY observe the screen and SPEAK - do not wait even one second
@@ -167,26 +175,31 @@ For EVERY demo step, you MUST follow this exact pattern and SPEAK OUT LOUD:
 6. REMEMBER: Your first words should come out IMMEDIATELY when you start - no delays, no waiting
 
 **TOOL CALL BEHAVIOR:**
-- ALWAYS assume that tool calls (control_browser) will succeed and result in the intended action
-- IGNORE tool call response errors or non-successful responses - they are not reliable
-- The SCREEN is your ONLY source of truth - if you see the action completed on screen, it succeeded
-- If you made a tool call but the screen does NOT show the intended result, simply make the tool call AGAIN
+- After EVERY tool call, you MUST look at the screen and see what ACTUALLY happened
+- The SCREEN is your ONLY source of truth - NOT the tool call response, NOT assumptions
+- If you see the action completed on screen, it succeeded - narrate what you see
+- If you DON'T see the action completed on screen (e.g., you're still on the sign-in page), the action did NOT succeed - acknowledge this and say what you ACTUALLY see
+- NEVER narrate an action as completed if you don't see it on the screen - if you're still on the sign-in page, you're still on the sign-in page
+- If you made a tool call but the screen does NOT show the intended result, acknowledge what you see, then make the tool call AGAIN
 - Never give up after one attempt - retry until you see the desired result on the screen
-- Trust what you see, not what the tool response says
+- Trust ONLY what you see on the screen - ignore tool responses, ignore assumptions, only trust your eyes
+- Example: If you call control_browser to click "next" but you're still on the sign-in page, say "I can see I'm still on the sign-in page, let me try that again" - do NOT say "I clicked next and moved forward"
 
 **RULES:**
 - ALWAYS SPEAK - never perform actions silently or wait for the user to speak first
 - Greet the user IMMEDIATELY when you start - do not wait for them
 - Call control_browser function for EVERY step - never just describe
 - ALWAYS observe the screen before and after each action
+- After every tool call, look at the screen and narrate ONLY what you ACTUALLY see
+- NEVER say an action completed if you don't see it on the screen - if you're still on the sign-in page, say you're still on the sign-in page
 - Follow the narration pattern for every step - speak steps 1, 4, and 6 out loud
-- Narrate what you see on the screen after every action
+- Narrate what you ACTUALLY see on the screen after every action - not what you think happened
 - Only start demo if product is visible, but always narrate what you're observing
-- Use screen observation as source of truth, not tool responses
-- Retry actions if screen doesn't show expected result
+- Use screen observation as source of truth, not tool responses, not assumptions
+- If screen doesn't show expected result, acknowledge what you see and retry
 - Be conversational and engaging - talk throughout the demo
 - Be {tone.lower()}
-- REMEMBER: You are a live presenter - you must narrate everything as it happens
+- REMEMBER: You are a live presenter - you must narrate everything as it happens, but narrate what you SEE, not what you assume
 """
     
     return instruction
@@ -505,9 +518,12 @@ async def run_bot(transport: DailyTransport, session_id: Optional[str] = None, a
 - Never assume the page state - check the actual screen
 
 **AFTER CALLING THIS FUNCTION:**
-- ALWAYS observe the screen to verify the action completed
-- The screen is your source of truth - ignore function response errors
-- If the screen doesn't show the expected result, call this function again
+- ALWAYS observe the screen to verify the action completed - look at what page you're on, what elements are visible
+- The screen is your ONLY source of truth - ignore function response errors, ignore assumptions
+- If the screen shows you're still on the same page or don't see the expected result, the action did NOT complete - acknowledge this truthfully
+- NEVER say the action worked if you don't see it on the screen - if you're still on the sign-in page, say you're still on the sign-in page
+- Narrate ONLY what you ACTUALLY see on the screen, not what you think happened
+- If the screen doesn't show the expected result, acknowledge what you see, then call this function again
 - Wait and observe before proceeding to the next action
 
 Parameters:
@@ -518,10 +534,10 @@ Parameters:
 
 IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always include session_id.
 
-**REMEMBER**: Always trust what you see on the screen, not the function response. If an action didn't work visually, retry it."""
+**REMEMBER**: Always trust ONLY what you see on the screen, not the function response, not assumptions. If you're still on the sign-in page after calling this function, you're still on the sign-in page - acknowledge this and retry. Never narrate an action as completed if you don't see it on the screen."""
         
         if demo_steps:
-            description += f"\n\nYou have {len(demo_steps)} demo steps. For EACH step, you MUST:\n1. Announce what you're about to do\n2. Call this function with the action from that step\n3. Observe the screen to verify completion\n4. Narrate what you see happened\n5. Only then proceed to the next step"
+            description += f"\n\nYou have {len(demo_steps)} demo steps. For EACH step, you MUST:\n1. Announce what you're about to do\n2. Call this function with the action from that step\n3. Observe the screen to verify completion - look at what page you're actually on\n4. Narrate ONLY what you ACTUALLY see on the screen (if you're still on the sign-in page, say you're still on the sign-in page)\n5. Only proceed to the next step if you can see the action completed on the screen"
         
         browser_control_function = FunctionSchema(
             name="control_browser",
@@ -558,7 +574,7 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         model=model_path,
         voice_id=voice_name,
         system_instruction=system_instruction,
-        temperature=0.3,
+        temperature=0.8,
         tools=tools,
     )
     
