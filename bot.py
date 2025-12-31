@@ -803,7 +803,7 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
         model=model_path,
         voice_id=voice_name,
         system_instruction=system_instruction,
-        temperature=0.8,
+        temperature=0.3,
         tools=tools,
     )
     
