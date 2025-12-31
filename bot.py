@@ -295,6 +295,207 @@ def get_agent_from_mongodb(agent_id: str) -> Optional[Dict]:
             client.close()
 
 
+def extract_room_name_from_url(room_url: str) -> Optional[str]:
+    """
+    Extract room name from Daily.co room URL.
+    
+    Examples:
+    - https://jobi.daily.co/browser-session-42ecb5cf -> browser-session-42ecb5cf
+    - https://your-domain.daily.co/room-name -> room-name
+    """
+    try:
+        from urllib.parse import urlparse
+        parsed = urlparse(room_url)
+        path = parsed.path.strip('/')
+        if path:
+            return path
+        # If no path, try to extract from the URL directly
+        if '/' in room_url:
+            return room_url.split('/')[-1]
+        return room_url
+    except Exception as e:
+        logger.error(f"Error extracting room name from URL: {e}")
+        return None
+
+
+async def get_meeting_id_for_room(room_name: str) -> Optional[str]:
+    """
+    Get meeting ID for a given room name.
+    
+    Args:
+        room_name: Name of the Daily room
+        
+    Returns:
+        Meeting ID or None if not found
+    """
+    if not DAILY_API_KEY:
+        logger.warning("DAILY_API_KEY not set - cannot check meetings")
+        return None
+    
+    headers = {
+        "Authorization": f"Bearer {DAILY_API_KEY}",
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{DAILY_API_BASE_URL}/meetings",
+                headers=headers
+            ) as response:
+                if response.status != 200:
+                    logger.debug(f"Failed to fetch meetings: {response.status}")
+                    return None
+                
+                data = await response.json()
+                meetings = data.get("data", [])
+                
+                for meeting in meetings:
+                    if meeting.get("room") == room_name:
+                        meeting_id = meeting.get("id")
+                        logger.info(f"📊 Found meeting ID {meeting_id} for room {room_name}")
+                        return meeting_id
+                
+                logger.debug(f"No active meeting found for room: {room_name}")
+                return None
+    except Exception as e:
+        logger.error(f"Error getting meeting ID: {e}", exc_info=True)
+        return None
+
+
+async def get_room_participants(meeting_id: str) -> list:
+    """
+    Get list of participants currently in a Daily.co meeting.
+    
+    Args:
+        meeting_id: ID of the Daily meeting
+        
+    Returns:
+        list: List of participant dictionaries
+    """
+    if not DAILY_API_KEY:
+        logger.warning("DAILY_API_KEY not set - cannot check participants")
+        return []
+    
+    headers = {
+        "Authorization": f"Bearer {DAILY_API_KEY}",
+    }
+    
+    try:
+        async with aiohttp.ClientSession() as session:
+            async with session.get(
+                f"{DAILY_API_BASE_URL}/meetings/{meeting_id}/participants",
+                headers=headers
+            ) as response:
+                if response.status == 200:
+                    data = await response.json()
+                    participants = data.get("data", data.get("participants", []))
+                    logger.debug(f"📊 Found {len(participants)} participants in meeting {meeting_id}")
+                    return participants
+                elif response.status == 404:
+                    logger.debug(f"📊 No active meeting yet (meeting ID: {meeting_id})")
+                    return []
+                else:
+                    error_text = await response.text()
+                    logger.warning(f"Failed to get participants: {response.status} - {error_text}")
+                    return []
+    except Exception as e:
+        logger.error(f"Error getting room participants: {e}", exc_info=True)
+        return []
+
+
+def is_bot_participant(participant: dict) -> bool:
+    """
+    Check if a participant is a bot (streaming bot or other automated participant).
+    
+    Args:
+        participant: Participant dictionary from Daily API
+        
+    Returns:
+        bool: True if participant appears to be a bot
+    """
+    user_name = (participant.get("user_name") or "").lower()
+    user_id = (participant.get("user_id") or "").lower()
+    
+    # Check if it's a bot based on name or user_id
+    # Common bot indicators: "guest", "bot", "stream", or user_id patterns
+    bot_indicators = ["bot", "guest", "stream", "automated"]
+    
+    for indicator in bot_indicators:
+        if indicator in user_name or indicator in user_id:
+            return True
+    
+    # If user_name is None/empty and user_id exists, it might be a bot
+    # But we'll be conservative - only mark as bot if we're sure
+    return False
+
+
+async def wait_for_user_participant(room_url: str, max_wait_seconds: int = 300, check_interval: float = 2.0) -> bool:
+    """
+    Wait for a user (non-bot) participant to join the room.
+    
+    Args:
+        room_url: Daily.co room URL
+        max_wait_seconds: Maximum time to wait in seconds (default: 5 minutes)
+        check_interval: Interval between checks in seconds (default: 2 seconds)
+        
+    Returns:
+        bool: True if a user participant joined, False if timeout
+    """
+    room_name = extract_room_name_from_url(room_url)
+    if not room_name:
+        logger.error(f"Could not extract room name from URL: {room_url}")
+        return False
+    
+    logger.info(f"⏳ Waiting for user participant to join room: {room_name}")
+    logger.info(f"⏳ Will check every {check_interval} seconds, max wait: {max_wait_seconds} seconds")
+    
+    # Give the meeting a moment to become active after room creation
+    await asyncio.sleep(1.0)
+    
+    start_time = time.time()
+    last_log_time = 0
+    log_interval = 10.0  # Log status every 10 seconds to reduce spam
+    
+    while True:
+        elapsed = time.time() - start_time
+        
+        if elapsed >= max_wait_seconds:
+            logger.warning(f"⏰ Timeout waiting for user participant after {max_wait_seconds} seconds")
+            return False
+        
+        meeting_id = await get_meeting_id_for_room(room_name)
+        if not meeting_id:
+            # Meeting not started yet, wait and retry
+            if elapsed - last_log_time >= log_interval:
+                logger.info(f"⏳ Waiting... Meeting not started yet (elapsed: {elapsed:.1f}s)")
+                last_log_time = elapsed
+            await asyncio.sleep(check_interval)
+            continue
+        
+        participants = await get_room_participants(meeting_id)
+        
+        # Check if there's at least one non-bot participant
+        user_participants = [p for p in participants if not is_bot_participant(p)]
+        
+        if user_participants:
+            logger.info(f"✅ User participant found! {len(user_participants)} user(s) in room")
+            for p in user_participants:
+                name = p.get('user_name', 'Unknown')
+                logger.info(f"   👤 User: {name}")
+            return True
+        
+        # Log current state periodically (every 10 seconds) to reduce log spam
+        if elapsed - last_log_time >= log_interval:
+            bot_count = len([p for p in participants if is_bot_participant(p)])
+            if bot_count > 0:
+                logger.info(f"⏳ Waiting... Found {bot_count} bot(s), no users yet (elapsed: {elapsed:.1f}s)")
+            else:
+                logger.info(f"⏳ Waiting... No participants yet (elapsed: {elapsed:.1f}s)")
+            last_log_time = elapsed
+        
+        await asyncio.sleep(check_interval)
+
+
 def fix_credentials():
     """Fix and validate Google Cloud credentials."""
     creds = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
@@ -652,132 +853,6 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
     runner = PipelineRunner(handle_sigint=True)
 
     await runner.run(task)
-
-
-def extract_room_name_from_url(room_url: str) -> Optional[str]:
-    """
-    Extract room name from Daily.co room URL.
-    
-    Example: https://your-domain.daily.co/room-name -> room-name
-    """
-    try:
-        # Daily room URLs are typically: https://domain.daily.co/room-name
-        parts = room_url.rstrip('/').split('/')
-        if parts:
-            return parts[-1]
-        return None
-    except Exception as e:
-        logger.error(f"Error extracting room name from URL: {e}")
-        return None
-
-
-async def get_room_participants(room_name: str) -> list:
-    """
-    Get list of participants currently in a Daily.co room.
-    
-    Args:
-        room_name: Name of the Daily room
-        
-    Returns:
-        list: List of participant dictionaries
-    """
-    if not DAILY_API_KEY:
-        logger.warning("DAILY_API_KEY not set - cannot check participants")
-        return []
-    
-    headers = {
-        "Authorization": f"Bearer {DAILY_API_KEY}",
-    }
-    
-    try:
-        async with aiohttp.ClientSession() as session:
-            async with session.get(
-                f"{DAILY_API_BASE_URL}/meetings/{room_name}/participants",
-                headers=headers
-            ) as response:
-                if response.status == 200:
-                    data = await response.json()
-                    participants = data.get("data", [])
-                    logger.info(f"📊 Found {len(participants)} participants in room {room_name}")
-                    return participants
-                elif response.status == 404:
-                    # Room doesn't exist or no meeting active
-                    logger.info(f"📊 No active meeting found for room {room_name}")
-                    return []
-                else:
-                    error_text = await response.text()
-                    logger.warning(f"Failed to get participants: {response.status} - {error_text}")
-                    return []
-    except Exception as e:
-        logger.error(f"Error getting room participants: {e}", exc_info=True)
-        return []
-
-
-def is_bot_participant(participant: dict) -> bool:
-    """
-    Check if a participant is a bot (video streaming bot).
-    
-    Args:
-        participant: Participant dictionary from Daily API
-        
-    Returns:
-        bool: True if participant appears to be a bot
-    """
-    user_name = participant.get("user_name", "").lower()
-    # Check if it's the browser streaming bot
-    if "browser" in user_name or "stream" in user_name or "bot" in user_name:
-        return True
-    return False
-
-
-async def wait_for_user_participant(room_url: str, max_wait_seconds: int = 300, check_interval: float = 2.0) -> bool:
-    """
-    Wait for a user (non-bot) participant to join the room.
-    
-    Args:
-        room_url: Daily.co room URL
-        max_wait_seconds: Maximum time to wait in seconds (default: 5 minutes)
-        check_interval: Interval between checks in seconds (default: 2 seconds)
-        
-    Returns:
-        bool: True if a user participant joined, False if timeout
-    """
-    room_name = extract_room_name_from_url(room_url)
-    if not room_name:
-        logger.error(f"Could not extract room name from URL: {room_url}")
-        return False
-    
-    logger.info(f"⏳ Waiting for user participant to join room: {room_name}")
-    logger.info(f"⏳ Will check every {check_interval} seconds, max wait: {max_wait_seconds} seconds")
-    
-    start_time = time.time()
-    
-    while True:
-        elapsed = time.time() - start_time
-        
-        if elapsed >= max_wait_seconds:
-            logger.warning(f"⏰ Timeout waiting for user participant after {max_wait_seconds} seconds")
-            return False
-        
-        participants = await get_room_participants(room_name)
-        
-        # Check if there's at least one non-bot participant
-        user_participants = [p for p in participants if not is_bot_participant(p)]
-        
-        if user_participants:
-            logger.info(f"✅ User participant found! {len(user_participants)} user(s) in room")
-            for p in user_participants:
-                logger.info(f"   👤 User: {p.get('user_name', 'Unknown')}")
-            return True
-        
-        # Log current state
-        bot_count = len([p for p in participants if is_bot_participant(p)])
-        if bot_count > 0:
-            logger.info(f"⏳ Waiting... Found {bot_count} bot(s), no users yet (elapsed: {elapsed:.1f}s)")
-        else:
-            logger.info(f"⏳ Waiting... No participants yet (elapsed: {elapsed:.1f}s)")
-        
-        await asyncio.sleep(check_interval)
 
 
 async def join_room_task(room_url: str, room_token: str = None, session_id: Optional[str] = None, agent_id: Optional[str] = None):
