@@ -403,12 +403,13 @@ async def get_room_participants(meeting_id: str) -> list:
         return []
 
 
-async def has_non_bot_participants(meeting_url: str) -> bool:
+async def has_non_bot_participants(meeting_url: str, exclude_participant_id: Optional[str] = None) -> bool:
     """
     Check if there are any non-bot participants in the room.
     
     Args:
         meeting_url: Daily.co meeting URL
+        exclude_participant_id: Optional participant ID to exclude from the check (e.g., someone who just left)
         
     Returns:
         bool: True if there are non-bot participants, False otherwise
@@ -426,12 +427,18 @@ async def has_non_bot_participants(meeting_url: str) -> bool:
     participants = await get_room_participants(meeting_id)
     logger.info(f"📊 Checking participants: found {len(participants)} total participants")
     
+    # Filter out the excluded participant if provided
+    if exclude_participant_id:
+        participants = [p for p in participants if p.get('participant_id') != exclude_participant_id and p.get('id') != exclude_participant_id]
+        logger.info(f"📊 After excluding participant {exclude_participant_id[:8]}..., {len(participants)} participants remain")
+    
     # Log all participants for debugging
     for p in participants:
         user_name = p.get('user_name', 'None')
         user_id = p.get('user_id', 'None')
+        participant_id = p.get('participant_id', p.get('id', 'None'))
         is_bot = is_bot_participant(p)
-        logger.info(f"   👤 Participant: name={user_name}, user_id={user_id}, is_bot={is_bot}")
+        logger.info(f"   👤 Participant: name={user_name}, user_id={user_id}, participant_id={participant_id}, is_bot={is_bot}")
     
     # Check if there's at least one non-bot participant
     user_participants = [p for p in participants if not is_bot_participant(p)]
@@ -955,16 +962,40 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
     async def on_participant_left(transport, participant, reason):
         """Handle when a participant leaves the room."""
         participant_id = participant.get("id") if isinstance(participant, dict) else participant
-        logger.info(f"👋 Participant left: {participant_id}, reason: {reason}")
+        participant_name = participant.get("user_name") if isinstance(participant, dict) else None
+        logger.info(f"👋 Participant left: {participant_id}, name: {participant_name}, reason: {reason}")
         
-        # Wait a moment for the API to update, then check if we should leave
+        # Check immediately using transport's participant list if available, otherwise use API
         if room_url:
             try:
-                # Give the API a moment to reflect the participant leaving
-                await asyncio.sleep(2.0)
+                # Try to get participants from transport first (more immediate)
+                transport_participants = []
+                try:
+                    if hasattr(transport, 'participants'):
+                        transport_participants = transport.participants()
+                        logger.info(f"📊 Transport reports {len(transport_participants)} participants")
+                except Exception as e:
+                    logger.debug(f"Could not get participants from transport: {e}")
                 
-                logger.info(f"🔍 Checking if bot should leave after participant left...")
-                has_participants = await has_non_bot_participants(room_url)
+                # If transport shows only bots or empty, leave immediately
+                if len(transport_participants) <= 1:  # Only bot itself or empty
+                    logger.info("👋 Transport shows no other participants. Bot will leave...")
+                    monitoring_active = False
+                    if not monitor_task.done():
+                        monitor_task.cancel()
+                    try:
+                        await transport.leave()
+                        logger.info("✅ Bot left Daily room (no participants)")
+                        return
+                    except Exception as e:
+                        logger.error(f"Error leaving room: {e}")
+                
+                # Otherwise, check API with exclusion (but with shorter delay since transport already filtered)
+                await asyncio.sleep(0.5)  # Short delay for API to catch up
+                
+                logger.info(f"🔍 Checking API if bot should leave after participant {participant_id[:8]}... left...")
+                # Exclude the participant that just left from the check
+                has_participants = await has_non_bot_participants(room_url, exclude_participant_id=participant_id)
                 logger.info(f"🔍 Participant check result: has_participants={has_participants}")
                 
                 if not has_participants:
