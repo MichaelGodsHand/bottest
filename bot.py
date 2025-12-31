@@ -413,19 +413,42 @@ def is_bot_participant(participant: dict) -> bool:
     Returns:
         bool: True if participant appears to be a bot
     """
-    user_name = (participant.get("user_name") or "").lower()
-    user_id = (participant.get("user_id") or "").lower()
+    user_name = participant.get("user_name")
+    user_id = participant.get("user_id")
+    participant_id = participant.get("participant_id", "")
+    
+    # Convert to lowercase strings for checking
+    user_name_lower = (user_name or "").lower()
+    user_id_lower = (user_id or "").lower()
+    participant_id_lower = (participant_id or "").lower()
     
     # Check if it's a bot based on name or user_id
-    # Common bot indicators: "guest", "bot", "stream", or user_id patterns
+    # Common bot indicators: "bot", "guest", "stream", "automated"
     bot_indicators = ["bot", "guest", "stream", "automated"]
     
     for indicator in bot_indicators:
-        if indicator in user_name or indicator in user_id:
+        if indicator in user_name_lower or indicator in user_id_lower or indicator in participant_id_lower:
             return True
     
-    # If user_name is None/empty and user_id exists, it might be a bot
-    # But we'll be conservative - only mark as bot if we're sure
+    # CRITICAL: If user_name is None/empty AND user_id exists, it's likely a bot
+    # The streaming bot typically has user_name=None but has a user_id
+    if not user_name and user_id:
+        logger.debug(f"Detected bot: user_name=None, user_id={user_id}")
+        return True
+    
+    # Also check if participant_id matches user_id (common for bots)
+    if user_id and participant_id and user_id == participant_id:
+        logger.debug(f"Detected bot: user_id matches participant_id={participant_id}")
+        return True
+    
+    # If user_name is None/empty and no user_id, but has participant_id, it might be a bot
+    # But be more conservative here - only if we have other indicators
+    if not user_name and not user_id and participant_id:
+        # This could be a guest user, so we'll be conservative
+        # Only mark as bot if participant_id suggests it (e.g., contains "bot" or "guest")
+        if any(indicator in participant_id_lower for indicator in bot_indicators):
+            return True
+    
     return False
 
 
