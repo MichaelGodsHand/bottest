@@ -19,7 +19,8 @@ import sys
 import json
 import threading
 import time
-from typing import Optional, Dict
+from datetime import datetime
+from typing import Optional, Dict, List
 
 from dotenv import load_dotenv
 from loguru import logger
@@ -293,6 +294,149 @@ def get_agent_from_mongodb(agent_id: str) -> Optional[Dict]:
     except Exception as e:
         logger.error(f"❌ Error getting agent from MongoDB: {e}", exc_info=True)
         return None
+    finally:
+        if client:
+            client.close()
+
+
+def get_user_from_mongodb(owner_id: str) -> Optional[Dict]:
+    """
+    Get user information from MongoDB using owner ID.
+    
+    Args:
+        owner_id: User ID (MongoDB _id) - can be string or ObjectId
+    
+    Returns:
+        User document with name and email, or None if not found
+    """
+    if not owner_id:
+        return None
+    
+    client = get_mongodb_client()
+    if not client:
+        return None
+    
+    try:
+        db = client["demify"]
+        users_collection = db["users"]
+        
+        # Try to find by ObjectId first
+        user = None
+        try:
+            user = users_collection.find_one({"_id": ObjectId(owner_id)})
+        except Exception:
+            # If ObjectId conversion fails, try as string
+            user = users_collection.find_one({"_id": owner_id})
+        
+        if user:
+            return {
+                "name": user.get("name", ""),
+                "email": user.get("email", "")
+            }
+        else:
+            logger.warning(f"⚠️ User not found in MongoDB with ID: {owner_id}")
+            return None
+        
+    except Exception as e:
+        logger.error(f"❌ Error getting user from MongoDB: {e}", exc_info=True)
+        return None
+    finally:
+        if client:
+            client.close()
+
+
+def save_conversation_history_to_mongodb(
+    session_id: str,
+    agent_id: Optional[str],
+    agent_data: Optional[Dict],
+    conversation_history: List[Dict[str, str]]
+) -> bool:
+    """
+    Save conversation history to MongoDB in the specified format.
+    
+    Args:
+        session_id: Session ID for the conversation
+        agent_id: Agent ID (MongoDB _id)
+        agent_data: Agent data dictionary (if already loaded)
+        conversation_history: List of messages with role and content
+    
+    Returns:
+        True if saved successfully, False otherwise
+    """
+    if not MONGODB_URI:
+        logger.warning("⚠️ MONGODB_URI not set - cannot save conversation history")
+        return False
+    
+    if not conversation_history:
+        logger.warning("⚠️ No conversation history to save")
+        return False
+    
+    client = get_mongodb_client()
+    if not client:
+        logger.error("❌ Cannot connect to MongoDB - conversation history not saved")
+        return False
+    
+    try:
+        db = client["demify"]
+        conversation_collection = db["conversationHistory"]
+        
+        # Get agent data if not provided
+        if not agent_data and agent_id:
+            agent_data = get_agent_from_mongodb(agent_id)
+        
+        if not agent_data:
+            logger.warning("⚠️ Agent data not available - cannot save conversation history")
+            return False
+        
+        # Get owner ID from agent
+        owner_id = agent_data.get("ownerId")
+        if not owner_id:
+            logger.warning("⚠️ Agent has no ownerId - cannot get customer info")
+            return False
+        
+        # Get user info (customer name and email)
+        user_info = get_user_from_mongodb(owner_id)
+        if not user_info:
+            logger.warning(f"⚠️ User not found for ownerId: {owner_id}")
+            # Use defaults if user not found
+            customer_name = "Unknown"
+            customer_email = ""
+        else:
+            customer_name = user_info.get("name", "Unknown")
+            customer_email = user_info.get("email", "")
+        
+        # Get product name (agent name)
+        product_name = agent_data.get("name", "Unknown")
+        
+        # Format agent_id as ObjectId
+        try:
+            agent_object_id = ObjectId(agent_id) if agent_id else None
+        except Exception:
+            logger.warning(f"⚠️ Invalid agent_id format: {agent_id}")
+            agent_object_id = None
+        
+        # Prepare conversation history document
+        history_doc = {
+            "session_id": session_id,
+            "customer_name": customer_name,
+            "customer_email": customer_email,
+            "agent_id": agent_object_id,
+            "product_name": product_name,
+            "history": conversation_history,
+            "createdAt": datetime.now(),
+            "__v": 0
+        }
+        
+        # Insert into MongoDB
+        result = conversation_collection.insert_one(history_doc)
+        logger.info(f"✅ Conversation history saved to MongoDB: session_id={session_id}, _id={result.inserted_id}")
+        logger.info(f"📋 Saved {len(conversation_history)} messages for customer: {customer_name} ({customer_email})")
+        
+        return True
+        
+    except Exception as e:
+        logger.error(f"❌ Error saving conversation history to MongoDB: {e}", exc_info=True)
+        return False
     finally:
         if client:
             client.close()
@@ -1078,6 +1222,59 @@ IMPORTANT: The action parameter MUST end with "and do NOTHING else". Always incl
                 await monitor_task
             except asyncio.CancelledError:
                 pass
+        
+        # Save conversation history to MongoDB
+        try:
+            logger.info("💾 Saving conversation history to MongoDB...")
+            
+            # Get conversation history from context aggregator
+            conversation_history = []
+            context_messages = []
+            
+            # Try multiple ways to access the messages (similar to refer.py)
+            if hasattr(context_aggregator, 'context') and hasattr(context_aggregator.context, 'messages'):
+                context_messages = context_aggregator.context.messages
+            elif hasattr(context_aggregator, '_context') and hasattr(context_aggregator._context, 'messages'):
+                context_messages = context_aggregator._context.messages
+            elif hasattr(context, 'messages'):
+                context_messages = context.messages
+            else:
+                # Try to get from aggregator's user/assistant processors
+                try:
+                    if hasattr(context_aggregator, 'user') and hasattr(context_aggregator.user, '_context'):
+                        context_messages = context_aggregator.user._context.messages if hasattr(context_aggregator.user._context, 'messages') else []
+                except:
+                    pass
+            
+            # Build conversation history in the required format
+            for msg in context_messages:
+                role = msg.get("role", "unknown")
+                content = msg.get("content", "")
+                # Only include user and assistant messages, skip system and empty content
+                if content and role in ["user", "assistant"]:
+                    conversation_history.append({
+                        "role": role,
+                        "content": content
+                    })
+            
+            if conversation_history:
+                logger.info(f"📝 Found {len(conversation_history)} messages to save")
+                
+                # Save to MongoDB
+                if current_session_id:
+                    save_conversation_history_to_mongodb(
+                        session_id=current_session_id,
+                        agent_id=agent_id,
+                        agent_data=agent_data,
+                        conversation_history=conversation_history
+                    )
+                else:
+                    logger.warning("⚠️ No session_id available - cannot save conversation history")
+            else:
+                logger.warning("⚠️ No conversation history found to save")
+                
+        except Exception as e:
+            logger.error(f"❌ Error saving conversation history: {e}", exc_info=True)
 
 
 async def join_room_task(room_url: str, room_token: str = None, session_id: Optional[str] = None, agent_id: Optional[str] = None):
