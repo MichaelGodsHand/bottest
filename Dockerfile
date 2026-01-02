@@ -40,5 +40,5 @@ ENV PORT=8080
 # Expose port (for FastAPI server mode)
 EXPOSE 8080
 
-# Run the bot using uv
-CMD ["uv", "run", "bot.py"]
+# Run the bot using uv in server mode
+CMD ["uv", "run", "bot.py", "--server"]
