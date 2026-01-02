@@ -16,14 +16,22 @@ RUN pip install --no-cache-dir uv
 ENV UV_COMPILE_BYTECODE=1
 
 # Copy dependency files first for better caching
-COPY pyproject.toml uv.lock ./
+COPY pyproject.toml ./
 
 # Install dependencies using uv (with cache mount for faster builds)
+# Note: --locked flag removed to work without uv.lock file
+# If uv.lock exists, you can add it back and use --locked for reproducible builds
 RUN --mount=type=cache,target=/root/.cache/uv \
-    uv sync --locked --no-install-project --no-dev
+    uv sync --no-install-project --no-dev
 
 # Copy application code
 COPY bot.py ./
+
+# Note: service-account.json is NOT copied to the image for security
+# In Cloud Run, use one of these options:
+# 1. Set GOOGLE_APPLICATION_CREDENTIALS as environment variable with JSON content
+# 2. Use Google Cloud Secret Manager and mount as file
+# 3. Use Cloud Run's built-in service account (if configured)
 
 # Set environment variables
 ENV PYTHONUNBUFFERED=1
